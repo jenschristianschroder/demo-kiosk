@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "title": "Add CI workflow for pull request validation",
+    "body": "Add a GitHub Actions CI workflow that runs on every pull request and push to `main` to validate all three services (`apps/launcher`, `apps/admin`, `services/registry-api`).\n\n## Scope\n\nThe workflow should:\n1. Install dependencies (`npm ci`) for each service.\n2. Run TypeScript type-checking (`tsc --noEmit` or the existing `build` script).\n3. Run the `npm test` script for each service.\n4. Use a matrix strategy to run all three services in parallel.\n5. Cache `node_modules` using `actions/cache` or `actions/setup-node` caching to speed up runs.\n6. Target Node.js 20 (matching the Dockerfiles).\n\n## Acceptance Criteria\n- [ ] `.github/workflows/ci.yml` exists and triggers on `pull_request` and `push` to `main`\n- [ ] All three services (`apps/launcher`, `apps/admin`, `services/registry-api`) are built and tested\n- [ ] Jobs run in parallel via a matrix strategy\n- [ ] Node.js dependency caching is enabled\n- [ ] Workflow passes on a clean checkout of `main`",
+    "labels": ["enhancement", "ci/cd"]
+  },
+  {
+    "title": "Add ESLint configuration and lint CI step",
+    "body": "The project currently has no linting configured. Add ESLint to all three services and integrate linting into the CI pipeline.\n\n## Scope\n\n1. Add ESLint with TypeScript support to each service:\n   - `apps/launcher` — React + TypeScript rules\n   - `apps/admin` — React + TypeScript rules\n   - `services/registry-api` — Node.js + TypeScript rules\n2. Add a `lint` script to each `package.json`.\n3. Add a lint step to the CI workflow (from the PR validation workflow issue).\n4. Fix any lint errors in existing code or add targeted rule overrides where appropriate.\n\n## Acceptance Criteria\n- [ ] ESLint config exists for each service\n- [ ] `npm run lint` works in each service directory\n- [ ] CI workflow includes a lint step that fails the build on lint errors\n- [ ] Existing code passes lint (or has documented, intentional overrides)",
+    "labels": ["enhancement", "ci/cd"]
+  },
+  {
+    "title": "Add unit tests to replace placeholder test scripts",
+    "body": "All three services currently have placeholder test scripts (`echo \"Tests passed\" && exit 0`). Add a real test framework and initial unit tests so that CI validates actual behavior.\n\n## Scope\n\n### `services/registry-api`\n- Add a test framework (e.g., Vitest or Jest with ts-jest).\n- Unit tests for:\n  - Demo store CRUD operations (InMemoryStore)\n  - URL validation logic\n  - API route handlers (supertest or similar)\n\n### `apps/launcher`\n- Add Vitest (pairs well with Vite).\n- Unit tests for:\n  - Key UI state transitions (idle timeout, demo launch/exit)\n  - Demo tile rendering given registry data\n\n### `apps/admin`\n- Add Vitest.\n- Unit tests for:\n  - Form validation (demo create/edit)\n  - Registry data fetching and display\n\n## Acceptance Criteria\n- [ ] Each service has a real test framework installed and configured\n- [ ] `npm test` runs actual tests (not echo placeholders)\n- [ ] At least 3 meaningful unit tests per service\n- [ ] Tests do not depend on external demo apps being reachable (mock external calls)\n- [ ] All tests pass in CI",
+    "labels": ["enhancement", "ci/cd", "testing"]
+  },
+  {
+    "title": "Add Docker image build validation to CI",
+    "body": "Add a CI workflow (or job in the existing CI workflow) that builds the Docker images for all three services on every pull request to catch Dockerfile and build issues early.\n\n## Scope\n\n1. Build Docker images for `apps/launcher`, `apps/admin`, and `services/registry-api` using their respective Dockerfiles.\n2. Use `docker build` (no push) to validate the build succeeds.\n3. Optionally use Docker layer caching (e.g., `docker/build-push-action` with cache) to speed up builds.\n4. Run on `pull_request` events.\n\n## Acceptance Criteria\n- [ ] Docker images for all three services build successfully in CI on every PR\n- [ ] Build failures in any Dockerfile fail the CI check\n- [ ] Docker layer caching is configured to minimize build times\n- [ ] No images are pushed to a registry (build-only validation)",
+    "labels": ["enhancement", "ci/cd"]
+  },
+  {
+    "title": "Add container image publish workflow",
+    "body": "Add a GitHub Actions workflow that builds and pushes Docker images to a container registry when changes are merged to `main`. This is a prerequisite for automated deployment to Azure Container Apps.\n\n## Scope\n\n1. Trigger on `push` to `main` (or on release tags).\n2. Build Docker images for all three services.\n3. Push images to a container registry (GitHub Container Registry `ghcr.io` recommended).\n4. Tag images with the Git SHA and `latest`.\n5. Use GitHub Actions OIDC or `GITHUB_TOKEN` for authentication to `ghcr.io`.\n\n## Acceptance Criteria\n- [ ] Workflow triggers on merge to `main`\n- [ ] Docker images for all three services are built and pushed to `ghcr.io`\n- [ ] Images are tagged with the Git commit SHA and `latest`\n- [ ] Authentication uses `GITHUB_TOKEN` (no manual secrets needed for ghcr.io)\n- [ ] Workflow does not run on pull requests (build-only validation is separate)",
+    "labels": ["enhancement", "ci/cd"]
+  },
+  {
+    "title": "Add CD workflow for Azure Container Apps deployment",
+    "body": "Add a GitHub Actions workflow that deploys the published container images to Azure Container Apps (ACA) after a successful image publish to the container registry.\n\n## Scope\n\n1. Trigger after the container image publish workflow completes successfully (use `workflow_run` or combine into a single workflow).\n2. Deploy all three services to ACA:\n   - `registry-api` — backend API\n   - `launcher` — frontend SPA\n   - `admin` — admin frontend SPA\n3. Use Azure CLI (`az containerapp update`) or the `azure/container-apps-deploy-action` GitHub Action.\n4. Configure authentication via Azure OIDC federated credentials (preferred) or repository secrets for Azure service principal.\n5. Support environment-based configuration (e.g., staging vs production) via workflow inputs or branch-based logic.\n\n## Acceptance Criteria\n- [ ] Deployment workflow exists and triggers after successful image publish\n- [ ] All three services are deployed to Azure Container Apps\n- [ ] Azure authentication uses OIDC federated credentials (or documented service principal secrets)\n- [ ] Deployment is idempotent (re-running produces the same result)\n- [ ] Health probe endpoints are configured in ACA for each service\n- [ ] Workflow logs clearly indicate which revision was deployed",
+    "labels": ["enhancement", "ci/cd"]
+  }
+]
