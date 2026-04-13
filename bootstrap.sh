@@ -59,6 +59,7 @@ prompt_with_default AZURE_SUBSCRIPTION_ID "Azure Subscription ID" "$(az account 
 prompt_with_default AZURE_LOCATION        "Azure region"          "northeurope"
 prompt_with_default RESOURCE_PREFIX        "Resource name prefix"  "hub-demo-kiosk"
 prompt_with_default SECRET_LIFETIME_DAYS   "Admin app client secret lifetime (days)" "30"
+prompt_with_default ROTATE_SECRET          "Rotate admin app client secret if it already exists? (true/false)" "false"
 
 az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 ok "Subscription: $AZURE_SUBSCRIPTION_ID"
@@ -99,12 +100,19 @@ ok "Resource group ready."
 ###############################################################################
 # Step 5 — Log Analytics Workspace
 ###############################################################################
-info "Creating Log Analytics workspace '$LOG_WORKSPACE'…"
-az monitor log-analytics workspace create \
+info "Ensuring Log Analytics workspace '$LOG_WORKSPACE' exists…"
+if az monitor log-analytics workspace show \
   --resource-group "$RESOURCE_GROUP" \
   --workspace-name "$LOG_WORKSPACE" \
-  --location "$AZURE_LOCATION" \
-  --output none 2>/dev/null || true
+  --output none 2>/dev/null; then
+  info "Log Analytics workspace '$LOG_WORKSPACE' already exists; skipping creation."
+else
+  az monitor log-analytics workspace create \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_WORKSPACE" \
+    --location "$AZURE_LOCATION" \
+    --output none
+fi
 
 LOG_WORKSPACE_ID="$(az monitor log-analytics workspace show \
   --resource-group "$RESOURCE_GROUP" \
@@ -121,7 +129,7 @@ ok "Log Analytics workspace ready (ID: ${LOG_WORKSPACE_ID:0:8}…)."
 ###############################################################################
 # Step 6 — Azure Container Registry
 ###############################################################################
-info "Creating Azure Container Registry '$ACR_NAME'…"
+info "Ensuring Azure Container Registry '$ACR_NAME' exists…"
 if az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
   ok "ACR '$ACR_NAME' already exists."
 else
@@ -129,13 +137,50 @@ else
     --name "$ACR_NAME" \
     --resource-group "$RESOURCE_GROUP" \
     --sku Basic \
-    --admin-enabled true \
     --location "$AZURE_LOCATION" \
     --output none
   ok "ACR '$ACR_NAME' created."
 fi
 
 ACR_LOGIN_SERVER="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query loginServer -o tsv)"
+ACR_RESOURCE_ID="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+###############################################################################
+# Step 6.5 — User-assigned managed identity for ACR image pull
+###############################################################################
+IDENTITY_NAME="${RESOURCE_PREFIX}-acr-pull"
+info "Ensuring managed identity '$IDENTITY_NAME' exists…"
+if az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+  info "Managed identity '$IDENTITY_NAME' already exists."
+else
+  az identity create \
+    --name "$IDENTITY_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --location "$AZURE_LOCATION" \
+    --output none
+  ok "Managed identity '$IDENTITY_NAME' created."
+fi
+
+IDENTITY_RESOURCE_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+IDENTITY_PRINCIPAL_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query principalId -o tsv)"
+
+info "Ensuring AcrPull role assignment for managed identity…"
+EXISTING_ROLE="$(az role assignment list \
+  --assignee "$IDENTITY_PRINCIPAL_ID" \
+  --role AcrPull \
+  --scope "$ACR_RESOURCE_ID" \
+  --query '[0].id' -o tsv 2>/dev/null || echo '')"
+if [[ -n "$EXISTING_ROLE" ]]; then
+  info "AcrPull role already assigned to managed identity."
+else
+  az role assignment create \
+    --assignee "$IDENTITY_PRINCIPAL_ID" \
+    --role AcrPull \
+    --scope "$ACR_RESOURCE_ID" \
+    --output none
+  ok "AcrPull role assigned to managed identity."
+fi
+ok "Managed identity ready for ACR pull."
 
 ###############################################################################
 # Step 7 — ACA Environment
@@ -190,20 +235,37 @@ az acr build \
 ok "admin image built."
 
 ###############################################################################
-# Step 9 — ACR credentials for ACA
-###############################################################################
-ACR_USERNAME="$(az acr credential show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query username -o tsv)"
-ACR_PASSWORD="$(az acr credential show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query 'passwords[0].value' -o tsv)"
-
-###############################################################################
 # Step 10 — Deploy registry-api (internal ingress)
 ###############################################################################
 info "Deploying container app '$CA_API'…"
 if az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+  az containerapp identity assign \
+    --name "$CA_API" \
+    --resource-group "$RESOURCE_GROUP" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
+    --output none
+  az containerapp registry set \
+    --name "$CA_API" \
+    --resource-group "$RESOURCE_GROUP" \
+    --server "$ACR_LOGIN_SERVER" \
+    --identity "$IDENTITY_RESOURCE_ID" \
+    --output none
   az containerapp update \
     --name "$CA_API" \
     --resource-group "$RESOURCE_GROUP" \
     --image "${ACR_LOGIN_SERVER}/registry-api:latest" \
+    --min-replicas 1 \
+    --max-replicas 1 \
+    --set-env-vars \
+      PORT=3001 \
+      CORS_ORIGIN='*' \
+      NODE_ENV=production \
+    --output none
+  az containerapp ingress update \
+    --name "$CA_API" \
+    --resource-group "$RESOURCE_GROUP" \
+    --type internal \
+    --target-port 3001 \
     --output none
   ok "$CA_API updated."
 else
@@ -213,8 +275,8 @@ else
     --environment "$ACA_ENV" \
     --image "${ACR_LOGIN_SERVER}/registry-api:latest" \
     --registry-server "$ACR_LOGIN_SERVER" \
-    --registry-username "$ACR_USERNAME" \
-    --registry-password "$ACR_PASSWORD" \
+    --registry-identity "$IDENTITY_RESOURCE_ID" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
     --target-port 3001 \
     --ingress internal \
     --min-replicas 1 \
@@ -237,11 +299,30 @@ info "Registry API internal URL: $API_INTERNAL_URL"
 ###############################################################################
 info "Deploying container app '$CA_LAUNCHER'…"
 if az containerapp show --name "$CA_LAUNCHER" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+  az containerapp identity assign \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
+    --output none
+  az containerapp registry set \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --server "$ACR_LOGIN_SERVER" \
+    --identity "$IDENTITY_RESOURCE_ID" \
+    --output none
   az containerapp update \
     --name "$CA_LAUNCHER" \
     --resource-group "$RESOURCE_GROUP" \
     --image "${ACR_LOGIN_SERVER}/launcher:latest" \
+    --min-replicas 1 \
+    --max-replicas 1 \
     --set-env-vars "API_BACKEND_URL=${API_INTERNAL_URL}" \
+    --output none
+  az containerapp ingress update \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --type external \
+    --target-port 80 \
     --output none
   ok "$CA_LAUNCHER updated."
 else
@@ -251,8 +332,8 @@ else
     --environment "$ACA_ENV" \
     --image "${ACR_LOGIN_SERVER}/launcher:latest" \
     --registry-server "$ACR_LOGIN_SERVER" \
-    --registry-username "$ACR_USERNAME" \
-    --registry-password "$ACR_PASSWORD" \
+    --registry-identity "$IDENTITY_RESOURCE_ID" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
     --target-port 80 \
     --ingress external \
     --min-replicas 1 \
@@ -271,11 +352,30 @@ LAUNCHER_URL="https://${LAUNCHER_FQDN}"
 ###############################################################################
 info "Deploying container app '$CA_ADMIN'…"
 if az containerapp show --name "$CA_ADMIN" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+  az containerapp identity assign \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
+    --output none
+  az containerapp registry set \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --server "$ACR_LOGIN_SERVER" \
+    --identity "$IDENTITY_RESOURCE_ID" \
+    --output none
   az containerapp update \
     --name "$CA_ADMIN" \
     --resource-group "$RESOURCE_GROUP" \
     --image "${ACR_LOGIN_SERVER}/admin:latest" \
+    --min-replicas 1 \
+    --max-replicas 1 \
     --set-env-vars "API_BACKEND_URL=${API_INTERNAL_URL}" \
+    --output none
+  az containerapp ingress update \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --type external \
+    --target-port 80 \
     --output none
   ok "$CA_ADMIN updated."
 else
@@ -285,8 +385,8 @@ else
     --environment "$ACA_ENV" \
     --image "${ACR_LOGIN_SERVER}/admin:latest" \
     --registry-server "$ACR_LOGIN_SERVER" \
-    --registry-username "$ACR_USERNAME" \
-    --registry-password "$ACR_PASSWORD" \
+    --registry-identity "$IDENTITY_RESOURCE_ID" \
+    --user-assigned "$IDENTITY_RESOURCE_ID" \
     --target-port 80 \
     --ingress external \
     --min-replicas 1 \
@@ -309,6 +409,9 @@ ADMIN_REDIRECT_URI="${ADMIN_URL}/.auth/login/aad/callback"
 # Check if app registration already exists
 EXISTING_APP_ID="$(az ad app list --display-name "$ENTRA_APP_NAME" --query '[0].appId' -o tsv 2>/dev/null || echo '')"
 
+SKIP_EASY_AUTH=false
+SECRET_END_DATE="$(date -u -d "+${SECRET_LIFETIME_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+${SECRET_LIFETIME_DAYS}d '+%Y-%m-%dT%H:%M:%SZ')"
+
 if [[ -n "$EXISTING_APP_ID" && "$EXISTING_APP_ID" != "None" ]]; then
   info "Entra ID app '$ENTRA_APP_NAME' already exists (appId: $EXISTING_APP_ID)."
   CLIENT_ID="$EXISTING_APP_ID"
@@ -317,6 +420,34 @@ if [[ -n "$EXISTING_APP_ID" && "$EXISTING_APP_ID" != "None" ]]; then
   az ad app update --id "$APP_OBJECT_ID" \
     --web-redirect-uris "$ADMIN_REDIRECT_URI" \
     --output none 2>/dev/null || true
+
+  # Only create/rotate the secret if one doesn't already exist or rotation is explicitly requested.
+  EXISTING_SECRET_EXPIRY="$(az ad app credential list \
+    --id "$CLIENT_ID" \
+    --query "[?displayName=='bootstrap-secret'].endDateTime | [0]" \
+    -o tsv 2>/dev/null || echo '')"
+
+  if [[ -n "$EXISTING_SECRET_EXPIRY" && "$EXISTING_SECRET_EXPIRY" != "None" ]]; then
+    if [[ "${ROTATE_SECRET}" == "true" ]]; then
+      info "Rotating client secret (ROTATE_SECRET=true, lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+      CLIENT_SECRET="$(az ad app credential reset \
+        --id "$CLIENT_ID" \
+        --display-name "bootstrap-secret" \
+        --end-date "$SECRET_END_DATE" \
+        --query password -o tsv)"
+    else
+      warn "Client secret 'bootstrap-secret' already exists (expires: $EXISTING_SECRET_EXPIRY)."
+      warn "Set ROTATE_SECRET=true to rotate credentials. Easy Auth configuration remains unchanged from the previous run."
+      SKIP_EASY_AUTH=true
+    fi
+  else
+    info "No existing 'bootstrap-secret' found. Creating client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+    CLIENT_SECRET="$(az ad app credential reset \
+      --id "$CLIENT_ID" \
+      --display-name "bootstrap-secret" \
+      --end-date "$SECRET_END_DATE" \
+      --query password -o tsv)"
+  fi
 else
   info "Creating Entra ID app registration '$ENTRA_APP_NAME'…"
   CLIENT_ID="$(az ad app create \
@@ -325,44 +456,45 @@ else
     --sign-in-audience AzureADMyOrg \
     --query appId -o tsv)"
   ok "Entra ID app created (appId: $CLIENT_ID)."
-fi
 
-# Create/reset client secret (lifetime configurable to comply with tenant policies)
-info "Creating client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
-SECRET_END_DATE="$(date -u -d "+${SECRET_LIFETIME_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+${SECRET_LIFETIME_DAYS}d '+%Y-%m-%dT%H:%M:%SZ')"
-CLIENT_SECRET="$(az ad app credential reset \
-  --id "$CLIENT_ID" \
-  --display-name "bootstrap-secret" \
-  --end-date "$SECRET_END_DATE" \
-  --query password -o tsv)"
+  info "Creating client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+  CLIENT_SECRET="$(az ad app credential reset \
+    --id "$CLIENT_ID" \
+    --display-name "bootstrap-secret" \
+    --end-date "$SECRET_END_DATE" \
+    --query password -o tsv)"
+fi
 
 ###############################################################################
 # Step 14 — Enable Easy Auth on admin container app
 ###############################################################################
-info "Enabling Easy Auth (Microsoft provider) on '$CA_ADMIN'…"
-TENANT_ID="$(az account show --query tenantId -o tsv)"
+if [[ "$SKIP_EASY_AUTH" != "true" ]]; then
+  info "Enabling Easy Auth (Microsoft provider) on '$CA_ADMIN'…"
+  TENANT_ID="$(az account show --query tenantId -o tsv)"
 
-# Store client secret as ACA secret
-az containerapp secret set \
-  --name "$CA_ADMIN" \
-  --resource-group "$RESOURCE_GROUP" \
-  --secrets "microsoft-provider-authentication-secret=${CLIENT_SECRET}" \
-  --output none 2>/dev/null || true
+  # Store client secret as ACA secret — fail loudly if this step fails.
+  if ! az containerapp secret set \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --secrets "microsoft-provider-authentication-secret=${CLIENT_SECRET}" \
+    --output none; then
+    fail "Failed to set Container App secret on '$CA_ADMIN'. Cannot proceed with Easy Auth configuration — aborting bootstrap."
+  fi
 
-az containerapp auth microsoft update \
-  --name "$CA_ADMIN" \
-  --resource-group "$RESOURCE_GROUP" \
-  --client-id "$CLIENT_ID" \
-  --client-secret-name "microsoft-provider-authentication-secret" \
-  --issuer "https://sts.windows.net/${TENANT_ID}/v2.0" \
-  --yes \
-  --output none 2>/dev/null || {
-    # If auth update fails, try enabling auth first then configuring
+  if ! az containerapp auth microsoft update \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --client-id "$CLIENT_ID" \
+    --client-secret-name "microsoft-provider-authentication-secret" \
+    --issuer "https://sts.windows.net/${TENANT_ID}/v2.0" \
+    --yes \
+    --output none 2>/dev/null; then
+    # If provider configuration fails, try enabling auth first and then configure again.
     az containerapp auth update \
       --name "$CA_ADMIN" \
       --resource-group "$RESOURCE_GROUP" \
       --unauthenticated-client-action RedirectToLoginPage \
-      --output none 2>/dev/null || true
+      --output none 2>/dev/null || fail "Failed to enable Easy Auth on '$CA_ADMIN'."
     az containerapp auth microsoft update \
       --name "$CA_ADMIN" \
       --resource-group "$RESOURCE_GROUP" \
@@ -370,10 +502,28 @@ az containerapp auth microsoft update \
       --client-secret-name "microsoft-provider-authentication-secret" \
       --issuer "https://sts.windows.net/${TENANT_ID}/v2.0" \
       --yes \
-      --output none
-  }
+      --output none || fail "Failed to configure Microsoft auth provider on '$CA_ADMIN'."
+  fi
 
-ok "Easy Auth configured on admin."
+  # Always explicitly enforce redirect-to-login for unauthenticated requests.
+  az containerapp auth update \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --unauthenticated-client-action RedirectToLoginPage \
+    --output none || fail "Failed to enforce login for unauthenticated requests on '$CA_ADMIN'."
+
+  # Verify the unauthenticated action is correctly set.
+  AUTH_ACTION="$(az containerapp auth show \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query 'globalValidation.unauthenticatedClientAction' \
+    -o tsv)" || fail "Failed to query Easy Auth configuration on '$CA_ADMIN'."
+  [[ "$AUTH_ACTION" == "RedirectToLoginPage" ]] || fail "Easy Auth configuration succeeded but verification failed: unauthenticated client action is '${AUTH_ACTION}', expected 'RedirectToLoginPage' on '$CA_ADMIN'."
+
+  ok "Easy Auth configured on admin."
+else
+  info "Skipping Easy Auth configuration (secret unchanged; auth already configured on previous run)."
+fi
 
 ###############################################################################
 # Step 15 — Smoke test
