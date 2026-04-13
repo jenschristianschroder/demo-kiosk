@@ -1,4 +1,4 @@
-
+[
   {
     "title": "Add CI workflow for pull request validation",
     "body": "Add a GitHub Actions CI workflow that runs on every pull request and push to `main` to validate all three services (`apps/launcher`, `apps/admin`, `services/registry-api`).\n\n## Scope\n\nThe workflow should:\n1. Install dependencies (`npm ci`) for each service.\n2. Run TypeScript type-checking (`tsc --noEmit` or the existing `build` script).\n3. Run the `npm test` script for each service.\n4. Use a matrix strategy to run all three services in parallel.\n5. Cache `node_modules` using `actions/cache` or `actions/setup-node` caching to speed up runs.\n6. Target Node.js 20 (matching the Dockerfiles).\n\n## Acceptance Criteria\n- [ ] `.github/workflows/ci.yml` exists and triggers on `pull_request` and `push` to `main`\n- [ ] All three services (`apps/launcher`, `apps/admin`, `services/registry-api`) are built and tested\n- [ ] Jobs run in parallel via a matrix strategy\n- [ ] Node.js dependency caching is enabled\n- [ ] Workflow passes on a clean checkout of `main`",
