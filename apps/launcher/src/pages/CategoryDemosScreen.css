@@ -1,0 +1,133 @@
+.category-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 48px;
+}
+
+.category-nav {
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 24px;
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #111111;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.nav-btn:active {
+  background: #e0e0e0;
+}
+
+.category-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 32px;
+}
+
+.category-title {
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #111111;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.category-subtitle {
+  font-size: 1rem;
+  color: #666666;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.category-status {
+  font-size: 1rem;
+  color: #888888;
+  text-align: center;
+  padding: 24px;
+}
+
+.category-error {
+  color: #cc0000;
+}
+
+.demos-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.demo-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  padding: 20px;
+  background: #ffffff;
+  border: 1.5px solid #222222;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  gap: 12px;
+}
+
+.demo-card:active {
+  background: #f5f5f5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.demo-thumb {
+  width: 100%;
+  height: 120px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f0f0f0;
+}
+
+.demo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.demo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.demo-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #111111;
+}
+
+.demo-desc {
+  font-size: 0.875rem;
+  color: #666666;
+  line-height: 1.4;
+}
+
+.demo-launch-hint {
+  font-size: 0.8125rem;
+  color: #999999;
+  font-weight: 500;
+  align-self: flex-end;
+}
