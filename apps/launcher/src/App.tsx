@@ -8,16 +8,15 @@ import { getSettings } from './services/api';
 
 const DEFAULT_IDLE_TIMEOUT = 60;
 
+const getInitialTimeout = (): number => {
+  const envTimeout = import.meta.env.VITE_IDLE_TIMEOUT;
+  return envTimeout ? (parseInt(envTimeout, 10) || DEFAULT_IDLE_TIMEOUT) : DEFAULT_IDLE_TIMEOUT;
+};
+
 const App: React.FC = () => {
-  const [idleTimeout, setIdleTimeout] = useState(DEFAULT_IDLE_TIMEOUT);
+  const [idleTimeout, setIdleTimeout] = useState(getInitialTimeout);
 
   useEffect(() => {
-    // Try to load idle timeout from the API; fall back to env var or default
-    const envTimeout = import.meta.env.VITE_IDLE_TIMEOUT;
-    if (envTimeout) {
-      setIdleTimeout(parseInt(envTimeout, 10) || DEFAULT_IDLE_TIMEOUT);
-    }
-
     getSettings()
       .then((settings) => {
         if (settings.idleTimeoutSeconds > 0) {

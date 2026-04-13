@@ -37,6 +37,7 @@ const CategoryDemosScreen: React.FC = () => {
         break;
       case 'sameTab':
       default:
+        // eslint-disable-next-line react-hooks/immutability -- intentional browser navigation
         window.location.href = demo.demoUrl;
         break;
     }
