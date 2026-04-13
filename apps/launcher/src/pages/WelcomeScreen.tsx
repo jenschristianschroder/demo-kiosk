@@ -11,7 +11,8 @@ const WelcomeScreen: React.FC = () => {
         <img
           className="welcome-icon"
           src="/images/Microsoft-logo_rgb_c-gray.png"
-          alt="Microsoft logo"
+          alt=""
+          aria-hidden="true"
         />
 
         <h1 className="welcome-title">Explore AI</h1>
