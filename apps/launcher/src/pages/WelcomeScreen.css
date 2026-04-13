@@ -19,6 +19,8 @@
 
 .welcome-icon {
   margin-bottom: 8px;
+  max-width: 280px;
+  height: auto;
 }
 
 .welcome-title {
