@@ -6,15 +6,6 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: Target environment
-        required: true
-        default: staging
-        type: choice
-        options:
-          - staging
-          - production
 
 permissions:
   id-token: write
@@ -55,7 +46,7 @@ jobs:
     needs: gate
     name: Deploy ${{ matrix.app }}
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'production' }}
+    environment: production
     strategy:
       fail-fast: false
       matrix:
