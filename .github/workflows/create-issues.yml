@@ -58,6 +58,42 @@ jobs:
 
             const failed = [];
 
+            // Auto-create any labels referenced in pending issues that don't exist yet
+            const allLabels = new Set();
+            for (const issue of issues) {
+              if (issue.labels) {
+                const parsed = Array.isArray(issue.labels)
+                  ? issue.labels
+                  : issue.labels.split(',').map(s => s.trim()).filter(Boolean);
+                parsed.forEach(l => allLabels.add(l));
+              }
+            }
+
+            if (allLabels.size > 0) {
+              const existingLabels = new Set();
+              const repoLabels = await github.paginate(
+                github.rest.issues.listLabelsForRepo,
+                { owner, repo }
+              );
+              repoLabels.forEach(l => existingLabels.add(l.name));
+
+              for (const label of allLabels) {
+                if (!existingLabels.has(label)) {
+                  try {
+                    await github.rest.issues.createLabel({
+                      owner,
+                      repo,
+                      name: label,
+                      color: 'ededed',
+                    });
+                    console.log(`Auto-created label "${label}"`);
+                  } catch (err) {
+                    core.warning(`Failed to auto-create label "${label}": ${err.message}`);
+                  }
+                }
+              }
+            }
+
             for (const issue of issues) {
               if (!issue.title) {
                 console.log('Skipping issue with no title:', JSON.stringify(issue));
@@ -104,17 +140,21 @@ jobs:
 
             // Write only the failed issues back to the queue for retry.
             // Successfully created issues are intentionally removed; an empty array clears the queue.
-            fs.writeFileSync(path, JSON.stringify(failed, null, 2));
+            fs.writeFileSync(path, JSON.stringify(failed, null, 2) + '\n');
 
             core.setOutput('created-count', String(created.length));
             core.setOutput('failed-count', String(failed.length));
-            core.summary
-              .addHeading('Issues Created', 3)
-              .addTable([
-                [{ data: '#', header: true }, { data: 'Title', header: true }, { data: 'URL', header: true }],
-                ...created.map(i => [String(i.number), i.title, i.url])
-              ]);
-            await core.summary.write();
+            try {
+              core.summary
+                .addHeading('Issues Created', 3)
+                .addTable([
+                  [{ data: '#', header: true }, { data: 'Title', header: true }, { data: 'URL', header: true }],
+                  ...created.map(i => [String(i.number), i.title, i.url])
+                ]);
+              await core.summary.write();
+            } catch (err) {
+              core.warning(`Failed to write job summary: ${err.message}`);
+            }
 
             if (failed.length > 0) {
               core.setFailed(`${failed.length} issue(s) failed to create and have been re-queued in pending-issues.json.`);
