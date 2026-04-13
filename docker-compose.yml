@@ -1,0 +1,25 @@
+services:
+  registry-api:
+    build:
+      context: ./services/registry-api
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      CORS_ORIGIN: "*"
+
+  launcher:
+    build:
+      context: ./apps/launcher
+    ports:
+      - "3000:80"
+    depends_on:
+      - registry-api
+
+  admin:
+    build:
+      context: ./apps/admin
+    ports:
+      - "3002:80"
+    depends_on:
+      - registry-api
