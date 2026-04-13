@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "title": "Test issue",
+    "body": "This is a test issue created to verify the issues agent workflow.\n\n## Acceptance Criteria\n- [ ] Issue is created successfully on GitHub when merged to the `pending-issues` branch",
+    "labels": ["test"]
+  }
+]
