@@ -7,13 +7,13 @@ import { createSettingsRouter } from './routes/settings';
 import { InMemoryStore } from './store';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
 const app = express();
 
 // Security & parsing
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: CORS_ORIGIN }));
+app.use(helmet());
+app.use(cors({ origin: CORS_ORIGIN.split(',').map((o) => o.trim()) }));
 app.use(express.json());
 
 // Store
