@@ -8,13 +8,12 @@ const WelcomeScreen: React.FC = () => {
   return (
     <div className="welcome-screen">
       <div className="welcome-content">
-        {/* Simple placeholder icon */}
-        <div className="welcome-icon" aria-hidden="true">
-          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="24" cy="24" r="22" stroke="#111" strokeWidth="2" />
-            <circle cx="24" cy="24" r="8" fill="#111" />
-          </svg>
-        </div>
+        <img
+          className="welcome-icon"
+          src="/images/Microsoft-logo_rgb_c-gray.png"
+          alt=""
+          aria-hidden="true"
+        />
 
         <h1 className="welcome-title">Explore AI</h1>
         <p className="welcome-subtitle">
