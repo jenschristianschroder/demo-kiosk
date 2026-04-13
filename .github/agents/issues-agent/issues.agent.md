@@ -5,7 +5,8 @@
 # For format details, see: https://gh.io/customagents/config
 
 name: Issues Agent
-description: Create GitHub issues from user prompts. Use when: create issue, new issue, add issue, file issue, log issue, track issue, open issue, bug report, feature request, pending issues.
+description: "Create GitHub issues from user prompts. Use when: create issue, new issue, add issue, file issue, log issue, track issue, open issue, bug report, feature request, pending issues."
+tools: [read, edit, search]
 ---
 
 # My Agent
