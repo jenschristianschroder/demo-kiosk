@@ -39,7 +39,7 @@ Each entry in `pending-issues.json` supports:
   git push -u origin pending-issues
   ```
 - **GitHub Actions enabled** on the repository with write permissions for issues and contents. The workflow uses `GITHUB_TOKEN`, so no additional secrets are required.
-- **Labels referenced in issues must already exist** in the repository. The GitHub API will error if you reference a label that hasn't been created.
+- Labels referenced in issues are **auto-created** by the workflow if they don't already exist (with a default gray color).
 
 ## Files
 
