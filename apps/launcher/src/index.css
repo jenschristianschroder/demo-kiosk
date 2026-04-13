@@ -1,0 +1,48 @@
+/* Global reset & kiosk styles — white background, black text */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #ffffff;
+  color: #111111;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  /* Prevent text selection on kiosk */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Prevent pull-to-refresh on touch */
+  overscroll-behavior: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Utility: container for content with max-width centering */
+.kiosk-container {
+  max-width: 480px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 24px;
+}
