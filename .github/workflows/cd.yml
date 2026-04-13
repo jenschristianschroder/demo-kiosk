@@ -76,7 +76,7 @@ jobs:
     name: Deploy ${{ matrix.app }}
     needs: publish
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'production' }}
+    environment: ${{ github.event.inputs.environment || 'production' }}
     strategy:
       fail-fast: false
       matrix:
