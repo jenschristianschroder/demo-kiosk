@@ -41,3 +41,32 @@ jobs:
 
       - name: Test
         run: npm test
+
+  docker-build:
+    name: Docker ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: apps/launcher
+            image: demo-kiosk/launcher
+          - service: apps/admin
+            image: demo-kiosk/admin
+          - service: services/registry-api
+            image: demo-kiosk/registry-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: false
+          tags: ${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
