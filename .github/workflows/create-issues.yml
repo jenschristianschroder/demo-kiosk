@@ -1,0 +1,118 @@
+name: Create Issues from Pending Issues
+
+# Triggered when pending-issues.json is updated on the pending-issues branch.
+# The file should contain an array of issue objects.
+
+on:
+  push:
+    branches:
+      - pending-issues
+    paths:
+      - '.github/agents/issues-agent/pending-issues.json'
+
+permissions:
+  issues: write
+  contents: write
+
+jobs:
+  create-issues:
+    name: Create issues from pending-issues.json
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pending-issues branch
+        uses: actions/checkout@v4
+        with:
+          ref: pending-issues
+
+      - name: Create issues
+        id: create
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = '.github/agents/issues-agent/pending-issues.json';
+
+            if (!fs.existsSync(path)) {
+              core.setFailed('pending-issues.json not found');
+              return;
+            }
+
+            const raw = fs.readFileSync(path, 'utf8');
+            let issues;
+            try {
+              issues = JSON.parse(raw);
+            } catch (e) {
+              core.setFailed(`Failed to parse pending-issues.json: ${e.message}`);
+              return;
+            }
+
+            if (!Array.isArray(issues) || issues.length === 0) {
+              console.log('No pending issues to create. Skipping.');
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const created = [];
+
+            for (const issue of issues) {
+              if (!issue.title) {
+                console.log('Skipping issue with no title:', JSON.stringify(issue));
+                continue;
+              }
+
+              const labels    = issue.labels
+                ? (Array.isArray(issue.labels) ? issue.labels : issue.labels.split(',').map(s => s.trim()).filter(Boolean))
+                : [];
+              const assignees = issue.assignees
+                ? (Array.isArray(issue.assignees) ? issue.assignees : issue.assignees.split(',').map(s => s.trim()).filter(Boolean))
+                : [];
+
+              let milestone;
+              if (issue.milestone) {
+                const milestoneRaw = String(issue.milestone);
+                if (!/^\d+$/.test(milestoneRaw)) {
+                  console.log(`Skipping invalid milestone "${milestoneRaw}" for issue "${issue.title}"`);
+                } else {
+                  const parsed = parseInt(milestoneRaw, 10);
+                  if (parsed >= 1) milestone = parsed;
+                }
+              }
+
+              const payload = {
+                owner,
+                repo,
+                title: issue.title,
+                ...(issue.body       ? { body: issue.body } : {}),
+                ...(labels.length    ? { labels }           : {}),
+                ...(assignees.length ? { assignees }        : {}),
+                ...(milestone        ? { milestone }        : {}),
+              };
+
+              try {
+                const { data } = await github.rest.issues.create(payload);
+                console.log(`Created issue #${data.number}: ${data.html_url}`);
+                created.push({ number: data.number, url: data.html_url, title: issue.title });
+              } catch (err) {
+                core.warning(`Failed to create issue "${issue.title}": ${err.message}`);
+              }
+            }
+
+            core.setOutput('created-count', String(created.length));
+            core.summary
+              .addHeading('Issues Created', 3)
+              .addTable([
+                [{ data: '#', header: true }, { data: 'Title', header: true }, { data: 'URL', header: true }],
+                ...created.map(i => [String(i.number), i.title, i.url])
+              ]);
+            await core.summary.write();
+
+      - name: Clear pending issues
+        run: |
+          echo "[]" > .github/agents/issues-agent/pending-issues.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/agents/issues-agent/pending-issues.json
+          git commit -m "Clear pending-issues.json after creating issues"
+          git push
