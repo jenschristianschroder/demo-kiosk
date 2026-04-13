@@ -2,7 +2,7 @@ name: CD — Deploy to Azure Container Apps
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["Publish Container Images"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -24,57 +24,12 @@ env:
   IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  # ── Publish container images to ACR ────────────────────────────────
-  publish:
+  # ── Deploy to Azure Container Apps ─────────────────────────────────
+  deploy:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-    name: Publish ${{ matrix.app }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - app: registry-api
-            context: services/registry-api
-          - app: launcher
-            context: apps/launcher
-          - app: admin
-            context: apps/admin
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.IMAGE_TAG }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Log in to ACR
-        run: az acr login --name "${{ vars.AZURE_CONTAINER_REGISTRY }}"
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          push: true
-          tags: |
-            ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:${{ env.IMAGE_TAG }}
-            ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:latest
-          cache-from: type=gha,scope=${{ matrix.context }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.context }}
-
-  # ── Deploy to Azure Container Apps ─────────────────────────────────
-  deploy:
     name: Deploy ${{ matrix.app }}
-    needs: publish
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'production' }}
     strategy:
