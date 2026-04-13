@@ -58,15 +58,27 @@ jobs:
 
             const failed = [];
 
+            const normalizeLabels = (labels) => {
+              if (Array.isArray(labels)) {
+                return labels
+                  .map(label => String(label).trim())
+                  .filter(Boolean);
+              }
+
+              if (typeof labels === 'string') {
+                return labels
+                  .split(',')
+                  .map(label => label.trim())
+                  .filter(Boolean);
+              }
+
+              return [];
+            };
+
             // Auto-create any labels referenced in pending issues that don't exist yet
             const allLabels = new Set();
             for (const issue of issues) {
-              if (issue.labels) {
-                const parsed = Array.isArray(issue.labels)
-                  ? issue.labels
-                  : issue.labels.split(',').map(s => s.trim()).filter(Boolean);
-                parsed.forEach(l => allLabels.add(l));
-              }
+              normalizeLabels(issue.labels).forEach(label => allLabels.add(label));
             }
 
             if (allLabels.size > 0) {
@@ -88,7 +100,7 @@ jobs:
                     });
                     console.log(`Auto-created label "${label}"`);
                   } catch (err) {
-                    core.warning(`Failed to auto-create label "${label}": ${err.message}`);
+                    core.warning(`Failed to auto-create label "${label}": ${String(err)}`);
                   }
                 }
               }
@@ -100,9 +112,7 @@ jobs:
                 continue;
               }
 
-              const labels    = issue.labels
-                ? (Array.isArray(issue.labels) ? issue.labels : issue.labels.split(',').map(s => s.trim()).filter(Boolean))
-                : [];
+              const labels    = normalizeLabels(issue.labels);
               const assignees = issue.assignees
                 ? (Array.isArray(issue.assignees) ? issue.assignees : issue.assignees.split(',').map(s => s.trim()).filter(Boolean))
                 : [];
@@ -133,7 +143,7 @@ jobs:
                 console.log(`Created issue #${data.number}: ${data.html_url}`);
                 created.push({ number: data.number, url: data.html_url, title: issue.title });
               } catch (err) {
-                core.warning(`Failed to create issue "${issue.title}": ${err.message}`);
+                core.warning(`Failed to create issue "${issue.title}": ${String(err)}`);
                 failed.push(issue);
               }
             }
@@ -153,7 +163,7 @@ jobs:
                 ]);
               await core.summary.write();
             } catch (err) {
-              core.warning(`Failed to write job summary: ${err.message}`);
+              core.warning(`Failed to write job summary: ${String(err)}`);
             }
 
             if (failed.length > 0) {
