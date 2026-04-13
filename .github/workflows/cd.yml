@@ -2,7 +2,7 @@ name: CD — Deploy to Azure Container Apps
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["Publish Container Images"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -19,62 +19,41 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: read
 
 env:
   IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  # ── Publish container images to ACR ────────────────────────────────
-  publish:
+  # ── Gate: verify CI passed for this commit ─────────────────────────
+  gate:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-    name: Publish ${{ matrix.app }}
+    name: Verify CI passed
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - app: registry-api
-            context: services/registry-api
-          - app: launcher
-            context: apps/launcher
-          - app: admin
-            context: apps/admin
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Check CI status for commit
+        uses: actions/github-script@v7
         with:
-          ref: ${{ env.IMAGE_TAG }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Log in to ACR
-        run: az acr login --name "${{ vars.AZURE_CONTAINER_REGISTRY }}"
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          push: true
-          tags: |
-            ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:${{ env.IMAGE_TAG }}
-            ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:latest
-          cache-from: type=gha,scope=${{ matrix.context }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.context }}
+          script: |
+            const sha = '${{ env.IMAGE_TAG }}';
+            const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: sha,
+            });
+            const ciRun = workflow_runs.find(r => r.name === 'CI' && r.conclusion === 'success');
+            if (!ciRun) {
+              core.setFailed(`CI workflow has not succeeded for commit ${sha}. Aborting deployment.`);
+            } else {
+              core.info(`CI workflow passed for commit ${sha} (run #${ciRun.run_number})`);
+            }
 
   # ── Deploy to Azure Container Apps ─────────────────────────────────
   deploy:
+    needs: gate
     name: Deploy ${{ matrix.app }}
-    needs: publish
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'production' }}
     strategy:
