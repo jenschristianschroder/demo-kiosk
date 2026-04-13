@@ -56,6 +56,8 @@ jobs:
             const repo  = context.repo.repo;
             const created = [];
 
+            const failed = [];
+
             for (const issue of issues) {
               if (!issue.title) {
                 console.log('Skipping issue with no title:', JSON.stringify(issue));
@@ -96,10 +98,16 @@ jobs:
                 created.push({ number: data.number, url: data.html_url, title: issue.title });
               } catch (err) {
                 core.warning(`Failed to create issue "${issue.title}": ${err.message}`);
+                failed.push(issue);
               }
             }
 
+            // Write only the failed issues back to the queue for retry.
+            // Successfully created issues are intentionally removed; an empty array clears the queue.
+            fs.writeFileSync(path, JSON.stringify(failed, null, 2));
+
             core.setOutput('created-count', String(created.length));
+            core.setOutput('failed-count', String(failed.length));
             core.summary
               .addHeading('Issues Created', 3)
               .addTable([
@@ -108,11 +116,15 @@ jobs:
               ]);
             await core.summary.write();
 
-      - name: Clear pending issues
+            if (failed.length > 0) {
+              core.setFailed(`${failed.length} issue(s) failed to create and have been re-queued in pending-issues.json.`);
+            }
+
+      - name: Update pending issues
+        if: always()
         run: |
-          echo "[]" > .github/agents/issues-agent/pending-issues.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/agents/issues-agent/pending-issues.json
-          git commit -m "Clear pending-issues.json after creating issues"
+          git diff --cached --quiet || git commit -m "Update pending-issues.json"
           git push
