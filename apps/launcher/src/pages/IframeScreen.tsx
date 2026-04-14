@@ -25,6 +25,8 @@ const IframeScreen: React.FC = () => {
           <iframe
             src={demoUrl}
             title={demoTitle}
+            /* allow-same-origin is required so cross-origin demos can access
+               their own cookies/storage. Demo URLs are admin-registered only. */
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             allow="camera; microphone; fullscreen"
           />

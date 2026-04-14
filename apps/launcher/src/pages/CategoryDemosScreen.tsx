@@ -35,9 +35,11 @@ const CategoryDemosScreen: React.FC = () => {
       case 'newTab':
         window.open(demo.demoUrl, '_blank', 'noopener,noreferrer');
         break;
-      case 'iframe':
-        navigate(`/demo/iframe?url=${encodeURIComponent(demo.demoUrl)}&title=${encodeURIComponent(demo.title)}`);
+      case 'iframe': {
+        const params = new URLSearchParams({ url: demo.demoUrl, title: demo.title });
+        navigate(`/demo/iframe?${params.toString()}`);
         break;
+      }
       case 'sameTab':
       default:
         // eslint-disable-next-line react-hooks/immutability -- intentional browser navigation
