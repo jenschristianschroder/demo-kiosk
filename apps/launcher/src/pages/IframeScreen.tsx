@@ -34,7 +34,10 @@ const IframeScreen: React.FC = () => {
         }
         setDemo(d);
       })
-      .catch(() => setError('Failed to load demo.'))
+      .catch((err) => {
+        console.error('Failed to load demo:', err);
+        setError('Unable to load demo. Please check that the demo exists and try again.');
+      })
       .finally(() => setLoading(false));
   }, [demoId]);
 
