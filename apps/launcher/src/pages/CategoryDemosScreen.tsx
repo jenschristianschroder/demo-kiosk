@@ -35,6 +35,9 @@ const CategoryDemosScreen: React.FC = () => {
       case 'newTab':
         window.open(demo.demoUrl, '_blank', 'noopener,noreferrer');
         break;
+      case 'iframe':
+        navigate(`/demo/iframe?url=${encodeURIComponent(demo.demoUrl)}&title=${encodeURIComponent(demo.title)}`);
+        break;
       case 'sameTab':
       default:
         // eslint-disable-next-line react-hooks/immutability -- intentional browser navigation
@@ -89,7 +92,11 @@ const CategoryDemosScreen: React.FC = () => {
                 <span className="demo-desc">{demo.description}</span>
               </div>
               <span className="demo-launch-hint">
-                {demo.launchMode === 'newTab' ? 'Opens in new tab ↗' : 'Launch →'}
+                {demo.launchMode === 'newTab'
+                  ? 'Opens in new tab ↗'
+                  : demo.launchMode === 'iframe'
+                    ? 'Opens embedded ▣'
+                    : 'Launch →'}
               </span>
             </button>
           ))}

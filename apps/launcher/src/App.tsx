@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import WelcomeScreen from './pages/WelcomeScreen';
 import CapabilitiesScreen from './pages/CapabilitiesScreen';
 import CategoryDemosScreen from './pages/CategoryDemosScreen';
+import IframeScreen from './pages/IframeScreen';
 import { useIdleTimeout } from './hooks/useIdleTimeout';
 import { getSettings } from './services/api';
 
@@ -35,6 +36,7 @@ const App: React.FC = () => {
       <Route path="/" element={<WelcomeScreen />} />
       <Route path="/capabilities" element={<CapabilitiesScreen />} />
       <Route path="/capabilities/:capability" element={<CategoryDemosScreen />} />
+      <Route path="/demo/iframe" element={<IframeScreen />} />
     </Routes>
   );
 };
