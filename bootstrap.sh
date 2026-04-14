@@ -200,7 +200,12 @@ fi
 ###############################################################################
 # Step 8 — Build & push container images (ACR cloud build)
 ###############################################################################
+# On Git Bash / MSYS, pwd returns /c/... which az acr build cannot resolve.
+# Convert to Windows-style path (C:\...) when cygpath is available.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  SCRIPT_DIR="$(cygpath -w "$SCRIPT_DIR")"
+fi
 
 info "Building registry-api image in ACR…"
 az acr build \
