@@ -6,7 +6,7 @@ name: Create Issues from Pending Issues
 on:
   push:
     branches:
-      - pending-issues
+      - main
     paths:
       - '.github/agents/issues-agent/pending-issues.json'
 
