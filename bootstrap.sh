@@ -4,9 +4,6 @@
 # All inputs can be passed as environment variables to skip interactive prompts.
 set -euo pipefail
 
-# Prevent Git Bash (MSYS) from mangling /subscriptions/... paths into Windows paths
-export MSYS_NO_PATHCONV=1
-
 ###############################################################################
 # Helpers
 ###############################################################################
@@ -63,7 +60,6 @@ prompt_with_default AZURE_LOCATION        "Azure region"          "northeurope"
 prompt_with_default RESOURCE_PREFIX        "Resource name prefix"  "hub-demo-kiosk"
 prompt_with_default SECRET_LIFETIME_DAYS   "Admin app client secret lifetime (days)" "30"
 prompt_with_default ROTATE_SECRET          "Rotate admin app client secret if it already exists? (true/false)" "false"
-prompt_with_default GITHUB_REPO            "GitHub repository (owner/repo) for OIDC federation" "jenschristianschroder/demo-kiosk"
 
 az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 ok "Subscription: $AZURE_SUBSCRIPTION_ID"
@@ -83,7 +79,6 @@ CA_LAUNCHER="ca-launcher"
 CA_ADMIN="ca-admin"
 
 ENTRA_APP_NAME="${RESOURCE_PREFIX}-admin-auth"
-GITHUB_OIDC_APP_NAME="${RESOURCE_PREFIX}-github-oidc"
 
 info "Derived resource names:"
 info "  Resource group:  $RESOURCE_GROUP"
@@ -170,16 +165,21 @@ IDENTITY_RESOURCE_ID="$(az identity show --name "$IDENTITY_NAME" --resource-grou
 IDENTITY_PRINCIPAL_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query principalId -o tsv)"
 
 info "Ensuring AcrPull role assignment for managed identity…"
-# Skip list-then-create pattern — az role assignment list can fail with MissingSubscription
-# when the principal is newly created. Instead, create directly (idempotent in current CLI).
-az role assignment create \
-  --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
+EXISTING_ROLE="$(az role assignment list \
+  --assignee "$IDENTITY_PRINCIPAL_ID" \
   --role AcrPull \
   --scope "$ACR_RESOURCE_ID" \
-  --output none 2>/dev/null \
-  && ok "AcrPull role ensured for managed identity." \
-  || info "AcrPull role assignment already exists (or was just created)."
+  --query '[0].id' -o tsv 2>/dev/null || echo '')"
+if [[ -n "$EXISTING_ROLE" ]]; then
+  info "AcrPull role already assigned to managed identity."
+else
+  az role assignment create \
+    --assignee "$IDENTITY_PRINCIPAL_ID" \
+    --role AcrPull \
+    --scope "$ACR_RESOURCE_ID" \
+    --output none
+  ok "AcrPull role assigned to managed identity."
+fi
 ok "Managed identity ready for ACR pull."
 
 ###############################################################################
@@ -202,12 +202,7 @@ fi
 ###############################################################################
 # Step 8 — Build & push container images (ACR cloud build)
 ###############################################################################
-# Use Windows-style paths on Git Bash / MSYS; plain pwd elsewhere
-if command -v cygpath >/dev/null 2>&1; then
-  SCRIPT_DIR="$(cygpath -w "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")"
-else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 info "Building registry-api image in ACR…"
 az acr build \
@@ -406,87 +401,6 @@ ADMIN_FQDN="$(az containerapp show --name "$CA_ADMIN" --resource-group "$RESOURC
 ADMIN_URL="https://${ADMIN_FQDN}"
 
 ###############################################################################
-# Step 12.5 — GitHub OIDC Federated Credential (for CI/CD)
-###############################################################################
-info "Configuring GitHub OIDC app registration '$GITHUB_OIDC_APP_NAME'…"
-
-EXISTING_OIDC_APP_ID="$(az ad app list --display-name "$GITHUB_OIDC_APP_NAME" --query '[0].appId' -o tsv 2>/dev/null || echo '')"
-
-if [[ -n "$EXISTING_OIDC_APP_ID" && "$EXISTING_OIDC_APP_ID" != "None" ]]; then
-  info "Entra ID app '$GITHUB_OIDC_APP_NAME' already exists (appId: $EXISTING_OIDC_APP_ID)."
-  OIDC_CLIENT_ID="$EXISTING_OIDC_APP_ID"
-else
-  OIDC_CLIENT_ID="$(az ad app create \
-    --display-name "$GITHUB_OIDC_APP_NAME" \
-    --query appId -o tsv)"
-  ok "Entra ID app '$GITHUB_OIDC_APP_NAME' created (appId: $OIDC_CLIENT_ID)."
-fi
-
-OIDC_OBJECT_ID="$(az ad app show --id "$OIDC_CLIENT_ID" --query id -o tsv)"
-
-# Ensure a service principal exists for the app (required for role assignments)
-if az ad sp show --id "$OIDC_CLIENT_ID" --output none 2>/dev/null; then
-  info "Service principal already exists."
-else
-  az ad sp create --id "$OIDC_CLIENT_ID" --output none
-  ok "Service principal created."
-fi
-
-OIDC_SP_ID="$(az ad sp show --id "$OIDC_CLIENT_ID" --query id -o tsv)"
-
-# Add federated credential for main branch
-info "Ensuring federated credential for branch 'main'…"
-EXISTING_FED_CRED="$(az ad app federated-credential list \
-  --id "$OIDC_OBJECT_ID" \
-  --query "[?name=='github-main'].name | [0]" \
-  -o tsv 2>/dev/null || echo '')"
-
-if [[ -n "$EXISTING_FED_CRED" && "$EXISTING_FED_CRED" != "None" ]]; then
-  info "Federated credential 'github-main' already exists."
-else
-  FED_CRED_JSON="$(cat <<ENDJSON
-{
-  "name": "github-main",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GITHUB_REPO}:ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"],
-  "description": "GitHub Actions - main branch"
-}
-ENDJSON
-)"
-  az ad app federated-credential create \
-    --id "$OIDC_OBJECT_ID" \
-    --parameters "$FED_CRED_JSON" \
-    --output none
-  ok "Federated credential 'github-main' created."
-fi
-
-# Assign Contributor role on the resource group
-info "Ensuring Contributor role assignment on '$RESOURCE_GROUP'…"
-RG_RESOURCE_ID="$(az group show --name "$RESOURCE_GROUP" --query id -o tsv)"
-az role assignment create \
-  --assignee-object-id "$OIDC_SP_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role Contributor \
-  --scope "$RG_RESOURCE_ID" \
-  --output none 2>/dev/null \
-  && ok "Contributor role ensured on '$RESOURCE_GROUP'." \
-  || info "Contributor role assignment already exists (or was just created)."
-
-# Also assign AcrPush so CI can build/push images
-info "Ensuring AcrPush role assignment on ACR…"
-az role assignment create \
-  --assignee-object-id "$OIDC_SP_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role AcrPush \
-  --scope "$ACR_RESOURCE_ID" \
-  --output none 2>/dev/null \
-  && ok "AcrPush role ensured on '$ACR_NAME'." \
-  || info "AcrPush role assignment already exists (or was just created)."
-
-ok "GitHub OIDC ready."
-
-###############################################################################
 # Step 13 — Entra ID App Registration for Admin Easy Auth
 ###############################################################################
 info "Configuring Entra ID app registration for admin auth…"
@@ -664,15 +578,6 @@ echo "  Resource Group:    $RESOURCE_GROUP"
 echo "  ACR:               $ACR_NAME ($ACR_LOGIN_SERVER)"
 echo "  ACA Environment:   $ACA_ENV"
 echo "  Entra App ID:      $CLIENT_ID"
-echo "  GitHub OIDC App:   $OIDC_CLIENT_ID"
-echo ""
-echo "  ┌─────────────────────────────────────────────────┐"
-echo "  │  GitHub Actions — Add these repo secrets:       │"
-echo "  │                                                  │"
-echo "  │  AZURE_CLIENT_ID:       $OIDC_CLIENT_ID"
-echo "  │  AZURE_TENANT_ID:       $(az account show --query tenantId -o tsv)"
-echo "  │  AZURE_SUBSCRIPTION_ID: $AZURE_SUBSCRIPTION_ID"
-echo "  └─────────────────────────────────────────────────┘"
 echo ""
 echo "  ┌─────────────────────────────────────────────────┐"
 echo "  │  NEXT STEP: Restrict admin access               │"
