@@ -1,12 +1,12 @@
 name: Create Issues from Pending Issues
 
-# Triggered when pending-issues.json is updated on the pending-issues branch.
+# Triggered when pending-issues.json is updated on the main branch.
 # The file should contain an array of issue objects.
 
 on:
   push:
     branches:
-      - pending-issues
+      - main
     paths:
       - '.github/agents/issues-agent/pending-issues.json'
 
@@ -19,10 +19,10 @@ jobs:
     name: Create issues from pending-issues.json
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout pending-issues branch
+      - name: Checkout main branch
         uses: actions/checkout@v4
         with:
-          ref: pending-issues
+          ref: main
 
       - name: Create issues
         id: create
