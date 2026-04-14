@@ -484,7 +484,7 @@ if [[ "$SKIP_EASY_AUTH" != "true" ]]; then
     --resource-group "$RESOURCE_GROUP" \
     --client-id "$CLIENT_ID" \
     --client-secret-name "microsoft-provider-authentication-secret" \
-    --issuer "https://sts.windows.net/${TENANT_ID}/v2.0" \
+    --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
     --yes \
     --output none 2>/dev/null; then
     # If provider configuration fails, try enabling auth first and then configure again.
@@ -498,7 +498,7 @@ if [[ "$SKIP_EASY_AUTH" != "true" ]]; then
       --resource-group "$RESOURCE_GROUP" \
       --client-id "$CLIENT_ID" \
       --client-secret-name "microsoft-provider-authentication-secret" \
-      --issuer "https://sts.windows.net/${TENANT_ID}/v2.0" \
+      --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
       --yes \
       --output none || fail "Failed to configure Microsoft auth provider on '$CA_ADMIN'."
   fi
