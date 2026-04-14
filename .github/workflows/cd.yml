@@ -62,12 +62,14 @@ jobs:
             startup-path: /
             liveness-path: /
             readiness-path: /health/ready
+            api-backend-url: "http://ca-registry-api"
           - app: admin
             ca-name: ca-admin
             target-port: 80
             startup-path: /
             liveness-path: /
             readiness-path: /
+            api-backend-url: "http://ca-registry-api"
     steps:
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -79,7 +81,36 @@ jobs:
       - name: Generate deployment template
         run: |
           IMAGE="${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:${{ env.IMAGE_TAG }}"
-          cat > /tmp/deploy.yaml <<EOF
+          if [ -n "${{ matrix.api-backend-url }}" ]; then
+            cat > /tmp/deploy.yaml <<EOF
+          properties:
+            template:
+              containers:
+              - name: ${{ matrix.app }}
+                image: ${IMAGE}
+                env:
+                - name: API_BACKEND_URL
+                  value: ${{ matrix.api-backend-url }}
+                probes:
+                - type: startup
+                  httpGet:
+                    path: ${{ matrix.startup-path }}
+                    port: ${{ matrix.target-port }}
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                - type: liveness
+                  httpGet:
+                    path: ${{ matrix.liveness-path }}
+                    port: ${{ matrix.target-port }}
+                  periodSeconds: 30
+                - type: readiness
+                  httpGet:
+                    path: ${{ matrix.readiness-path }}
+                    port: ${{ matrix.target-port }}
+                  periodSeconds: 10
+          EOF
+          else
+            cat > /tmp/deploy.yaml <<EOF
           properties:
             template:
               containers:
@@ -103,6 +134,7 @@ jobs:
                     port: ${{ matrix.target-port }}
                   periodSeconds: 10
           EOF
+          fi
 
       - name: Deploy to Azure Container Apps
         run: |
