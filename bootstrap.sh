@@ -407,7 +407,7 @@ ADMIN_REDIRECT_URI="${ADMIN_URL}/.auth/login/aad/callback"
 # Check if app registration already exists
 EXISTING_APP_ID="$(az ad app list --display-name "$ENTRA_APP_NAME" --query '[0].appId' -o tsv 2>/dev/null || echo '')"
 
-SKIP_EASY_AUTH=false
+SECRET_UNCHANGED=false
 SECRET_END_DATE="$(date -u -d "+${SECRET_LIFETIME_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+${SECRET_LIFETIME_DAYS}d '+%Y-%m-%dT%H:%M:%SZ')"
 
 if [[ -n "$EXISTING_APP_ID" && "$EXISTING_APP_ID" != "None" ]]; then
@@ -435,8 +435,8 @@ if [[ -n "$EXISTING_APP_ID" && "$EXISTING_APP_ID" != "None" ]]; then
         --query password -o tsv)"
     else
       warn "Client secret 'bootstrap-secret' already exists (expires: $EXISTING_SECRET_EXPIRY)."
-      warn "Set ROTATE_SECRET=true to rotate credentials. Easy Auth configuration remains unchanged from the previous run."
-      SKIP_EASY_AUTH=true
+      warn "Set ROTATE_SECRET=true to rotate credentials."
+      SECRET_UNCHANGED=true
     fi
   else
     info "No existing 'bootstrap-secret' found. Creating client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
@@ -470,7 +470,7 @@ info "Configuring Easy Auth (Microsoft provider) on '$CA_ADMIN'…"
 TENANT_ID="$(az account show --query tenantId -o tsv)"
 
 # Store client secret as ACA secret — only when a fresh secret was created/rotated.
-if [[ "$SKIP_EASY_AUTH" != "true" ]]; then
+if [[ "$SECRET_UNCHANGED" != "true" ]]; then
   if ! az containerapp secret set \
     --name "$CA_ADMIN" \
     --resource-group "$RESOURCE_GROUP" \
@@ -479,6 +479,15 @@ if [[ "$SKIP_EASY_AUTH" != "true" ]]; then
     fail "Failed to set Container App secret on '$CA_ADMIN'. Cannot proceed with Easy Auth configuration — aborting bootstrap."
   fi
 else
+  # Verify the ACA secret exists — it may be missing if the container app was
+  # recreated or the secret was manually deleted since the last run.
+  if ! az containerapp secret show \
+    --name "$CA_ADMIN" \
+    --resource-group "$RESOURCE_GROUP" \
+    --secret-name "microsoft-provider-authentication-secret" \
+    --output none 2>/dev/null; then
+    fail "Container App secret 'microsoft-provider-authentication-secret' does not exist on '$CA_ADMIN' but the Entra client secret was not rotated. Re-run with ROTATE_SECRET=true to create a fresh secret."
+  fi
   info "Client secret unchanged; reusing existing ACA secret."
 fi
 
@@ -521,7 +530,7 @@ az containerapp auth update \
   --unauthenticated-client-action RedirectToLoginPage \
   --enabled true \
   --token-store true \
-  --output none || fail "Failed to enforce login for unauthenticated requests on '$CA_ADMIN'."
+  --output none || fail "Failed to configure Easy Auth on '$CA_ADMIN' (enable + redirect-to-login + token store)."
 
 # Verify the unauthenticated action is correctly set.
 AUTH_ACTION="$(az containerapp auth show \
