@@ -62,12 +62,14 @@ jobs:
             startup-path: /
             liveness-path: /
             readiness-path: /health/ready
+            api-backend-url: "http://ca-registry-api"
           - app: admin
             ca-name: ca-admin
             target-port: 80
             startup-path: /
             liveness-path: /
             readiness-path: /
+            api-backend-url: "http://ca-registry-api"
     steps:
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -79,12 +81,16 @@ jobs:
       - name: Generate deployment template
         run: |
           IMAGE="${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:${{ env.IMAGE_TAG }}"
+          ENV_BLOCK=""
+          if [ -n "${{ matrix.api-backend-url }}" ]; then
+            ENV_BLOCK=$(printf '\n      env:\n      - name: API_BACKEND_URL\n        value: %s' '${{ matrix.api-backend-url }}')
+          fi
           cat > /tmp/deploy.yaml <<EOF
           properties:
             template:
               containers:
               - name: ${{ matrix.app }}
-                image: ${IMAGE}
+                image: ${IMAGE}${ENV_BLOCK}
                 probes:
                 - type: startup
                   httpGet:
