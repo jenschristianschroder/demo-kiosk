@@ -51,16 +51,19 @@ jobs:
       matrix:
         include:
           - app: registry-api
+            ca-name: ca-registry-api
             target-port: 3001
             startup-path: /health/startup
             liveness-path: /health/live
             readiness-path: /health/ready
           - app: launcher
+            ca-name: ca-launcher
             target-port: 80
             startup-path: /
             liveness-path: /
             readiness-path: /health/ready
           - app: admin
+            ca-name: ca-admin
             target-port: 80
             startup-path: /
             liveness-path: /
@@ -104,7 +107,7 @@ jobs:
       - name: Deploy to Azure Container Apps
         run: |
           az containerapp update \
-            --name "${{ matrix.app }}" \
+            --name "${{ matrix.ca-name }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --yaml /tmp/deploy.yaml \
             --output none
@@ -112,7 +115,7 @@ jobs:
       - name: Log deployed revision
         run: |
           REVISION=$(az containerapp revision list \
-            --name "${{ matrix.app }}" \
+            --name "${{ matrix.ca-name }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --query "sort_by([],&properties.createdTime)[-1].name" \
             --output tsv)
