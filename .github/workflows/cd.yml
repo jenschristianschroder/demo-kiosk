@@ -56,6 +56,7 @@ jobs:
             startup-path: /health/startup
             liveness-path: /health/live
             readiness-path: /health/ready
+            cors-origin: "*"
           - app: launcher
             ca-name: ca-launcher
             target-port: 80
@@ -91,6 +92,34 @@ jobs:
                 env:
                 - name: API_BACKEND_URL
                   value: ${{ matrix.api-backend-url }}
+                probes:
+                - type: startup
+                  httpGet:
+                    path: ${{ matrix.startup-path }}
+                    port: ${{ matrix.target-port }}
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                - type: liveness
+                  httpGet:
+                    path: ${{ matrix.liveness-path }}
+                    port: ${{ matrix.target-port }}
+                  periodSeconds: 30
+                - type: readiness
+                  httpGet:
+                    path: ${{ matrix.readiness-path }}
+                    port: ${{ matrix.target-port }}
+                  periodSeconds: 10
+          EOF
+          elif [ -n "${{ matrix.cors-origin }}" ]; then
+            cat > /tmp/deploy.yaml <<EOF
+          properties:
+            template:
+              containers:
+              - name: ${{ matrix.app }}
+                image: ${IMAGE}
+                env:
+                - name: CORS_ORIGIN
+                  value: "${{ matrix.cors-origin }}"
                 probes:
                 - type: startup
                   httpGet:
