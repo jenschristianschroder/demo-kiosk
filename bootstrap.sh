@@ -4,6 +4,10 @@
 # All inputs can be passed as environment variables to skip interactive prompts.
 set -euo pipefail
 
+# Prevent Git Bash/MSYS from rewriting Azure resource IDs like /subscriptions/...
+# into Windows paths when passing arguments to Azure CLI commands.
+export MSYS_NO_PATHCONV=1
+
 ###############################################################################
 # Helpers
 ###############################################################################
@@ -165,20 +169,14 @@ IDENTITY_RESOURCE_ID="$(az identity show --name "$IDENTITY_NAME" --resource-grou
 IDENTITY_PRINCIPAL_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query principalId -o tsv)"
 
 info "Ensuring AcrPull role assignment for managed identity…"
-EXISTING_ROLE="$(az role assignment list \
+if az role assignment create \
   --assignee "$IDENTITY_PRINCIPAL_ID" \
   --role AcrPull \
   --scope "$ACR_RESOURCE_ID" \
-  --query '[0].id' -o tsv 2>/dev/null || echo '')"
-if [[ -n "$EXISTING_ROLE" ]]; then
-  info "AcrPull role already assigned to managed identity."
-else
-  az role assignment create \
-    --assignee "$IDENTITY_PRINCIPAL_ID" \
-    --role AcrPull \
-    --scope "$ACR_RESOURCE_ID" \
-    --output none
+  --output none 2>/dev/null; then
   ok "AcrPull role assigned to managed identity."
+else
+  info "AcrPull role already assigned to managed identity."
 fi
 ok "Managed identity ready for ACR pull."
 
