@@ -505,7 +505,6 @@ if ! az containerapp auth microsoft update \
   --client-id "$CLIENT_ID" \
   --client-secret-name "microsoft-provider-authentication-secret" \
   --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
-  --allowed-audiences "$CLIENT_ID" "api://${CLIENT_ID}" \
   --yes \
   --output none 2>/dev/null; then
   # If provider configuration fails, try enabling auth first and then configure again.
@@ -521,21 +520,17 @@ if ! az containerapp auth microsoft update \
     --client-id "$CLIENT_ID" \
     --client-secret-name "microsoft-provider-authentication-secret" \
     --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
-    --allowed-audiences "$CLIENT_ID" "api://${CLIENT_ID}" \
     --yes \
     --output none || fail "Failed to configure Microsoft auth provider on '$CA_ADMIN'."
 fi
 
-# Always explicitly enable auth, enforce redirect-to-login for unauthenticated
-# requests, and enable the token store (required for the auth-code callback to
-# persist tokens and set session cookies).
+# Always explicitly enable auth and enforce redirect-to-login for unauthenticated requests.
 az containerapp auth update \
   --name "$CA_ADMIN" \
   --resource-group "$RESOURCE_GROUP" \
   --unauthenticated-client-action RedirectToLoginPage \
   --enabled true \
-  --token-store true \
-  --output none || fail "Failed to configure Easy Auth on '$CA_ADMIN' (enable + redirect-to-login + token store)."
+  --output none || fail "Failed to configure Easy Auth on '$CA_ADMIN'."
 
 # Verify the unauthenticated action is correctly set.
 AUTH_ACTION="$(az containerapp auth show \
