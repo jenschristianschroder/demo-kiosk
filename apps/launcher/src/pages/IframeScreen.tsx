@@ -1,12 +1,44 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Demo } from '../types';
+import { getDemo } from '../services/api';
 import './IframeScreen.css';
+
+function isAllowedUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 const IframeScreen: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const demoUrl = searchParams.get('url');
-  const demoTitle = searchParams.get('title') || 'Demo';
+  const demoId = searchParams.get('demoId');
+
+  const [demo, setDemo] = useState<Demo | null>(null);
+  const [loading, setLoading] = useState(Boolean(demoId));
+  const [error, setError] = useState<string | null>(
+    demoId ? null : 'No demo ID provided.'
+  );
+
+  useEffect(() => {
+    if (!demoId) return;
+    getDemo(demoId)
+      .then((d) => {
+        if (!isAllowedUrl(d.demoUrl)) {
+          setError('Demo URL is not a valid HTTP/HTTPS address.');
+          return;
+        }
+        setDemo(d);
+      })
+      .catch(() => setError('Failed to load demo.'))
+      .finally(() => setLoading(false));
+  }, [demoId]);
+
+  const title = demo?.title || 'Demo';
 
   return (
     <div className="iframe-screen">
@@ -14,24 +46,26 @@ const IframeScreen: React.FC = () => {
         <button className="nav-btn" onClick={() => navigate(-1)} type="button">
           ← Back
         </button>
-        <span className="iframe-nav-title">{demoTitle}</span>
+        <span className="iframe-nav-title">{title}</span>
         <button className="nav-btn" onClick={() => navigate('/')} type="button">
           Home
         </button>
       </div>
 
       <div className="iframe-container">
-        {demoUrl ? (
+        {loading && <div className="iframe-status">Loading demo…</div>}
+        {error && <div className="iframe-error">{error}</div>}
+        {demo && (
           <iframe
-            src={demoUrl}
-            title={demoTitle}
+            src={demo.demoUrl}
+            title={title}
             /* allow-same-origin is required so cross-origin demos can access
-               their own cookies/storage. Demo URLs are admin-registered only. */
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            allow="camera; microphone; fullscreen"
+               their own cookies/storage. Keep default capabilities narrow and
+               only expand them explicitly if a specific demo requires it. */
+            sandbox="allow-scripts allow-same-origin"
+            allow="fullscreen"
+            referrerPolicy="no-referrer"
           />
-        ) : (
-          <div className="iframe-error">No demo URL provided.</div>
         )}
       </div>
     </div>

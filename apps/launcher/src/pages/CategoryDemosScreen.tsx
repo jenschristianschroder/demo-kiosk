@@ -36,7 +36,7 @@ const CategoryDemosScreen: React.FC = () => {
         window.open(demo.demoUrl, '_blank', 'noopener,noreferrer');
         break;
       case 'iframe': {
-        const params = new URLSearchParams({ url: demo.demoUrl, title: demo.title });
+        const params = new URLSearchParams({ demoId: demo.id });
         navigate(`/demo/iframe?${params.toString()}`);
         break;
       }

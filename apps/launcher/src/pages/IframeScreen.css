@@ -70,3 +70,14 @@
   padding: 24px;
   text-align: center;
 }
+
+.iframe-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 1rem;
+  color: #888888;
+  padding: 24px;
+  text-align: center;
+}
