@@ -496,9 +496,8 @@ else
   info "Client secret unchanged; reusing existing ACA secret."
 fi
 
-# Always (re-)apply the Microsoft auth provider configuration so that issuer,
-# audiences, and other settings are correct even on re-runs or after an
-# interrupted previous attempt.
+# Always (re-)apply the Microsoft auth provider configuration so that the issuer
+# and other settings are correct even on re-runs or after an interrupted previous attempt.
 if ! az containerapp auth microsoft update \
   --name "$CA_ADMIN" \
   --resource-group "$RESOURCE_GROUP" \
