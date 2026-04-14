@@ -101,14 +101,21 @@ unset _sa_base _sa_hash
 
 TOKEN_CONTAINER="easyauthtokens"
 
+# Storage account for the demo registry. Can be overridden via DEMO_STORAGE_ACCOUNT env var.
+# Defaults to the well-known existing account 'hubdemokioskst'.
+DEMO_STORAGE_ACCOUNT="${DEMO_STORAGE_ACCOUNT:-hubdemokioskst}"
+DEMO_REGISTRY_CONTAINER="demo-registry"
+
 info "Derived resource names:"
-info "  Resource group:  $RESOURCE_GROUP"
-info "  ACR:             $ACR_NAME"
-info "  ACA Environment: $ACA_ENV"
-info "  Log Analytics:   $LOG_WORKSPACE"
-info "  Storage Account: $STORAGE_ACCOUNT"
-info "  Token Container: $TOKEN_CONTAINER"
-info "  Container Apps:  $CA_API, $CA_LAUNCHER, $CA_ADMIN"
+info "  Resource group:        $RESOURCE_GROUP"
+info "  ACR:                   $ACR_NAME"
+info "  ACA Environment:       $ACA_ENV"
+info "  Log Analytics:         $LOG_WORKSPACE"
+info "  Storage Account:       $STORAGE_ACCOUNT"
+info "  Token Container:       $TOKEN_CONTAINER"
+info "  Demo Storage Account:  $DEMO_STORAGE_ACCOUNT"
+info "  Demo Registry Container: $DEMO_REGISTRY_CONTAINER"
+info "  Container Apps:        $CA_API, $CA_LAUNCHER, $CA_ADMIN"
 
 ###############################################################################
 # Step 4 — Resource Group
@@ -228,6 +235,41 @@ else
 fi
 
 TOKEN_BLOB_URI="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${TOKEN_CONTAINER}"
+
+###############################################################################
+# Step 6.2 — Demo-registry blob container in DEMO_STORAGE_ACCOUNT
+###############################################################################
+info "Ensuring demo storage account '$DEMO_STORAGE_ACCOUNT' exists…"
+az storage account show --name "$DEMO_STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null \
+  || fail "Demo storage account '$DEMO_STORAGE_ACCOUNT' not found in resource group '$RESOURCE_GROUP'. Ensure it exists in the correct resource group or set DEMO_STORAGE_ACCOUNT to an existing account name in that group."
+ok "Demo storage account '$DEMO_STORAGE_ACCOUNT' found."
+
+DEMO_STORAGE_RESOURCE_ID="$(az storage account show --name "$DEMO_STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+# Create blob container via ARM management plane (bypasses data plane firewall + key restrictions)
+info "Ensuring blob container '$DEMO_REGISTRY_CONTAINER' exists in '$DEMO_STORAGE_ACCOUNT'…"
+DEMO_REGISTRY_CONTAINER_URL="${DEMO_STORAGE_RESOURCE_ID}/blobServices/default/containers/${DEMO_REGISTRY_CONTAINER}?api-version=2023-05-01"
+
+demo_container_check_output=""
+if demo_container_check_output="$(az rest --method GET \
+  --url "$DEMO_REGISTRY_CONTAINER_URL" \
+  --output none 2>&1)"; then
+  ok "Blob container '$DEMO_REGISTRY_CONTAINER' already exists."
+elif printf '%s' "$demo_container_check_output" | grep -Eq 'ContainerNotFound|ResourceNotFound|404'; then
+  demo_container_create_output=""
+  if demo_container_create_output="$(az rest --method PUT \
+    --url "$DEMO_REGISTRY_CONTAINER_URL" \
+    --body '{}' \
+    --output none 2>&1)"; then
+    ok "Blob container '$DEMO_REGISTRY_CONTAINER' created."
+  elif printf '%s' "$demo_container_create_output" | grep -Eq 'ContainerAlreadyExists|409'; then
+    ok "Blob container '$DEMO_REGISTRY_CONTAINER' already exists."
+  else
+    fail "Failed to create blob container '$DEMO_REGISTRY_CONTAINER': $demo_container_create_output"
+  fi
+else
+  fail "Failed to check blob container '$DEMO_REGISTRY_CONTAINER': $demo_container_check_output"
+fi
 
 ###############################################################################
 # Step 6.5 — User-assigned managed identity for ACR image pull
