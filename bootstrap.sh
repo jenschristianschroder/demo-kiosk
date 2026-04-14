@@ -84,11 +84,30 @@ CA_ADMIN="ca-admin"
 
 ENTRA_APP_NAME="${RESOURCE_PREFIX}-admin-auth"
 
+# Derive a compliant Storage Account name: lowercase alphanumeric, 3–24 chars, globally unique.
+# Strip non-alphanumeric chars, lowercase, then append a 6-char hex hash of the
+# subscription ID + resource group to avoid global name collisions.
+_sa_base="${RESOURCE_PREFIX//[^a-zA-Z0-9]/}"
+_sa_base="${_sa_base,,}"
+_sa_hash="$(printf '%s' "${AZURE_SUBSCRIPTION_ID}${RESOURCE_GROUP}" | sha256sum | cut -c1-6)"
+STORAGE_ACCOUNT="${_sa_base:0:18}${_sa_hash}"   # max 18-char base + 6-char hash ≤ 24 chars
+unset _sa_base _sa_hash
+
+# Validate the derived name satisfies Azure Storage account naming rules.
+[[ ${#STORAGE_ACCOUNT} -ge 3 && ${#STORAGE_ACCOUNT} -le 24 ]] \
+  || fail "Derived storage account name '$STORAGE_ACCOUNT' is ${#STORAGE_ACCOUNT} chars; must be 3–24."
+[[ "$STORAGE_ACCOUNT" =~ ^[a-z0-9]+$ ]] \
+  || fail "Derived storage account name '$STORAGE_ACCOUNT' contains invalid characters; only lowercase letters and numbers are allowed."
+
+TOKEN_CONTAINER="easyauthtokens"
+
 info "Derived resource names:"
 info "  Resource group:  $RESOURCE_GROUP"
 info "  ACR:             $ACR_NAME"
 info "  ACA Environment: $ACA_ENV"
 info "  Log Analytics:   $LOG_WORKSPACE"
+info "  Storage Account: $STORAGE_ACCOUNT"
+info "  Token Container: $TOKEN_CONTAINER"
 info "  Container Apps:  $CA_API, $CA_LAUNCHER, $CA_ADMIN"
 
 ###############################################################################
@@ -148,6 +167,67 @@ fi
 
 ACR_LOGIN_SERVER="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query loginServer -o tsv)"
 ACR_RESOURCE_ID="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+###############################################################################
+# Step 6.1 — Storage Account for Easy Auth token store (no public access, no keys)
+###############################################################################
+info "Ensuring Storage Account '$STORAGE_ACCOUNT' exists…"
+if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+  ok "Storage Account '$STORAGE_ACCOUNT' already exists; enforcing security settings…"
+  az storage account update \
+    --name "$STORAGE_ACCOUNT" \
+    --resource-group "$RESOURCE_GROUP" \
+    --allow-blob-public-access false \
+    --allow-shared-key-access false \
+    --min-tls-version TLS1_2 \
+    --default-action Deny \
+    --bypass AzureServices \
+    --output none
+  ok "Storage Account security settings enforced."
+else
+  az storage account create \
+    --name "$STORAGE_ACCOUNT" \
+    --resource-group "$RESOURCE_GROUP" \
+    --location "$AZURE_LOCATION" \
+    --sku Standard_LRS \
+    --kind StorageV2 \
+    --allow-blob-public-access false \
+    --allow-shared-key-access false \
+    --default-action Deny \
+    --bypass AzureServices \
+    --min-tls-version TLS1_2 \
+    --output none
+  ok "Storage Account '$STORAGE_ACCOUNT' created."
+fi
+
+STORAGE_RESOURCE_ID="$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+# Create blob container via ARM management plane (bypasses data plane firewall + key restrictions)
+info "Ensuring blob container '$TOKEN_CONTAINER' exists…"
+TOKEN_CONTAINER_URL="${STORAGE_RESOURCE_ID}/blobServices/default/containers/${TOKEN_CONTAINER}?api-version=2023-05-01"
+
+container_check_output=""
+if container_check_output="$(az rest --method GET \
+  --url "$TOKEN_CONTAINER_URL" \
+  --output none 2>&1)"; then
+  ok "Blob container '$TOKEN_CONTAINER' already exists."
+elif printf '%s' "$container_check_output" | grep -Eq 'ContainerNotFound|ResourceNotFound|404'; then
+  container_create_output=""
+  if container_create_output="$(az rest --method PUT \
+    --url "$TOKEN_CONTAINER_URL" \
+    --body '{}' \
+    --output none 2>&1)"; then
+    ok "Blob container '$TOKEN_CONTAINER' created."
+  elif printf '%s' "$container_create_output" | grep -Eq 'ContainerAlreadyExists|409'; then
+    ok "Blob container '$TOKEN_CONTAINER' already exists."
+  else
+    fail "Failed to create blob container '$TOKEN_CONTAINER': $container_create_output"
+  fi
+else
+  fail "Failed to check blob container '$TOKEN_CONTAINER': $container_check_output"
+fi
+
+TOKEN_BLOB_URI="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${TOKEN_CONTAINER}"
 
 ###############################################################################
 # Step 6.5 — User-assigned managed identity for ACR image pull
@@ -404,6 +484,40 @@ ADMIN_FQDN="$(az containerapp show --name "$CA_ADMIN" --resource-group "$RESOURC
 ADMIN_URL="https://${ADMIN_FQDN}"
 
 ###############################################################################
+# Step 12.1 — System-assigned MI for ca-admin (token store blob access)
+###############################################################################
+info "Ensuring system-assigned managed identity on '$CA_ADMIN'…"
+az containerapp identity assign \
+  --name "$CA_ADMIN" \
+  --resource-group "$RESOURCE_GROUP" \
+  --system-assigned \
+  --output none
+ADMIN_MI_PRINCIPAL_ID="$(az containerapp show --name "$CA_ADMIN" --resource-group "$RESOURCE_GROUP" --query 'identity.principalId' -o tsv)"
+[[ -n "$ADMIN_MI_PRINCIPAL_ID" ]] || fail "Failed to resolve system-assigned managed identity principalId for '$CA_ADMIN'."
+ok "System-assigned MI enabled (principalId: ${ADMIN_MI_PRINCIPAL_ID:0:8}…)."
+
+info "Assigning Storage Blob Data Contributor to ca-admin MI on '$STORAGE_ACCOUNT'…"
+EXISTING_ROLE_ASSIGNMENT_COUNT="$(az role assignment list \
+  --assignee-object-id "$ADMIN_MI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$STORAGE_RESOURCE_ID" \
+  --query 'length(@)' \
+  -o tsv)"
+
+if [[ "$EXISTING_ROLE_ASSIGNMENT_COUNT" -gt 0 ]]; then
+  info "Storage Blob Data Contributor already assigned to ca-admin MI."
+else
+  az role assignment create \
+    --assignee-object-id "$ADMIN_MI_PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" \
+    --scope "$STORAGE_RESOURCE_ID" \
+    --output none
+  ok "Storage Blob Data Contributor assigned to ca-admin MI."
+fi
+
+###############################################################################
 # Step 13 — Entra ID App Registration for Admin Easy Auth
 ###############################################################################
 info "Configuring Entra ID app registration for admin auth…"
@@ -468,6 +582,20 @@ else
     --query password -o tsv)"
 fi
 
+# Enable ID token issuance (required for Easy Auth server-directed flow)
+info "Ensuring ID token issuance is enabled…"
+az ad app update --id "$CLIENT_ID" --enable-id-token-issuance true --output none
+ok "ID token issuance enabled."
+
+# Ensure a service principal exists (required for sign-in to work)
+info "Ensuring service principal exists for '$ENTRA_APP_NAME'…"
+if az ad sp show --id "$CLIENT_ID" --output none 2>/dev/null; then
+  info "Service principal already exists."
+else
+  az ad sp create --id "$CLIENT_ID" --output none
+  ok "Service principal created."
+fi
+
 ###############################################################################
 # Step 14 — Enable Easy Auth on admin container app
 ###############################################################################
@@ -524,11 +652,14 @@ if ! az containerapp auth microsoft update \
 fi
 
 # Always explicitly enable auth and enforce redirect-to-login for unauthenticated requests.
+# Enable token store backed by blob storage (using system-assigned MI for access).
 az containerapp auth update \
   --name "$CA_ADMIN" \
   --resource-group "$RESOURCE_GROUP" \
   --unauthenticated-client-action RedirectToLoginPage \
   --enabled true \
+  --token-store true \
+  --blob-container-uri "$TOKEN_BLOB_URI" \
   --output none || fail "Failed to configure Easy Auth on '$CA_ADMIN'."
 
 # Verify the unauthenticated action is correctly set.
