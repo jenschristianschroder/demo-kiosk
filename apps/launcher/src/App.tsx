@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import WelcomeScreen from './pages/WelcomeScreen';
 import CapabilitiesScreen from './pages/CapabilitiesScreen';
 import CategoryDemosScreen from './pages/CategoryDemosScreen';
+import IframeScreen from './pages/IframeScreen';
 import { useIdleTimeout } from './hooks/useIdleTimeout';
 import { getSettings } from './services/api';
 
@@ -15,6 +16,8 @@ const getInitialTimeout = (): number => {
 
 const App: React.FC = () => {
   const [idleTimeout, setIdleTimeout] = useState(getInitialTimeout);
+  const location = useLocation();
+  const isIframeRoute = location.pathname === '/demo/iframe';
 
   useEffect(() => {
     getSettings()
@@ -28,13 +31,14 @@ const App: React.FC = () => {
       });
   }, []);
 
-  useIdleTimeout(idleTimeout);
+  useIdleTimeout(idleTimeout, isIframeRoute);
 
   return (
     <Routes>
       <Route path="/" element={<WelcomeScreen />} />
       <Route path="/capabilities" element={<CapabilitiesScreen />} />
       <Route path="/capabilities/:capability" element={<CategoryDemosScreen />} />
+      <Route path="/demo/iframe" element={<IframeScreen />} />
     </Routes>
   );
 };
