@@ -56,6 +56,7 @@ jobs:
             startup-path: /health/startup
             liveness-path: /health/live
             readiness-path: /health/ready
+            cors-origin: "*"
           - app: launcher
             ca-name: ca-launcher
             target-port: 80
@@ -81,65 +82,44 @@ jobs:
       - name: Generate deployment template
         run: |
           IMAGE="${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ matrix.app }}:${{ env.IMAGE_TAG }}"
-          if [ -n "${{ matrix.api-backend-url }}" ]; then
-            cat > /tmp/deploy.yaml <<EOF
-          properties:
-            template:
-              containers:
-              - name: ${{ matrix.app }}
-                image: ${IMAGE}
-                env:
-                - name: API_BACKEND_URL
-                  value: ${{ matrix.api-backend-url }}
-                probes:
-                - type: startup
-                  httpGet:
-                    path: ${{ matrix.startup-path }}
-                    port: ${{ matrix.target-port }}
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                - type: liveness
-                  httpGet:
-                    path: ${{ matrix.liveness-path }}
-                    port: ${{ matrix.target-port }}
-                  periodSeconds: 30
-                - type: readiness
-                  httpGet:
-                    path: ${{ matrix.readiness-path }}
-                    port: ${{ matrix.target-port }}
-                  periodSeconds: 10
-          EOF
-          else
-            cat > /tmp/deploy.yaml <<EOF
-          properties:
-            template:
-              containers:
-              - name: ${{ matrix.app }}
-                image: ${IMAGE}
-                probes:
-                - type: startup
-                  httpGet:
-                    path: ${{ matrix.startup-path }}
-                    port: ${{ matrix.target-port }}
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                - type: liveness
-                  httpGet:
-                    path: ${{ matrix.liveness-path }}
-                    port: ${{ matrix.target-port }}
-                  periodSeconds: 30
-                - type: readiness
-                  httpGet:
-                    path: ${{ matrix.readiness-path }}
-                    port: ${{ matrix.target-port }}
-                  periodSeconds: 10
-          EOF
-          fi
+          {
+            echo "properties:"
+            echo "  template:"
+            echo "    containers:"
+            echo "    - name: ${{ matrix.app }}"
+            echo "      image: ${IMAGE}"
+            if [ -n "${{ matrix['api-backend-url'] }}" ]; then
+              echo "      env:"
+              echo "      - name: API_BACKEND_URL"
+              echo "        value: ${{ matrix['api-backend-url'] }}"
+            elif [ -n "${{ matrix['cors-origin'] }}" ]; then
+              echo "      env:"
+              echo "      - name: CORS_ORIGIN"
+              echo "        value: \"${{ matrix['cors-origin'] }}\""
+            fi
+            echo "      probes:"
+            echo "      - type: startup"
+            echo "        httpGet:"
+            echo "          path: ${{ matrix['startup-path'] }}"
+            echo "          port: ${{ matrix['target-port'] }}"
+            echo "        initialDelaySeconds: 5"
+            echo "        periodSeconds: 10"
+            echo "      - type: liveness"
+            echo "        httpGet:"
+            echo "          path: ${{ matrix['liveness-path'] }}"
+            echo "          port: ${{ matrix['target-port'] }}"
+            echo "        periodSeconds: 30"
+            echo "      - type: readiness"
+            echo "        httpGet:"
+            echo "          path: ${{ matrix['readiness-path'] }}"
+            echo "          port: ${{ matrix['target-port'] }}"
+            echo "        periodSeconds: 10"
+          } > /tmp/deploy.yaml
 
       - name: Deploy to Azure Container Apps
         run: |
           az containerapp update \
-            --name "${{ matrix.ca-name }}" \
+            --name "${{ matrix['ca-name'] }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --yaml /tmp/deploy.yaml \
             --output none
@@ -147,7 +127,7 @@ jobs:
       - name: Log deployed revision
         run: |
           REVISION=$(az containerapp revision list \
-            --name "${{ matrix.ca-name }}" \
+            --name "${{ matrix['ca-name'] }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --query "sort_by([],&properties.createdTime)[-1].name" \
             --output tsv)
