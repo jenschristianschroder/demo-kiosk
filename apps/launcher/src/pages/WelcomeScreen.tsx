@@ -25,7 +25,7 @@ const WelcomeScreen: React.FC = () => {
           onClick={() => navigate('/capabilities')}
           type="button"
         >
-          How do errors happen?
+          Try it now
         </button>
       </div>
 
