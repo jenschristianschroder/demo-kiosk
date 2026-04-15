@@ -63,7 +63,7 @@ async function startup(): Promise<void> {
         );
         if (attempt === STARTUP_MAX_RETRIES) {
           console.error(
-            'Blob store connectivity check exhausted all retries. Marking service as ready anyway; ' +
+            'Blob store connectivity check exhausted all retries. Continuing startup; ' +
               'the readiness probe will report not-ready until blob storage becomes reachable.',
           );
           break;

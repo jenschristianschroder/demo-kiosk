@@ -147,23 +147,19 @@ describe('health routes', () => {
       setReadinessChecker(checker);
       setReady(true);
 
-      // Freeze time
-      const realDateNow = Date.now;
-      let fakeNow = realDateNow();
-      Date.now = () => fakeNow;
+      let fakeNow = Date.now();
+      const spy = jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
 
-      try {
-        await request(server, '/health/ready');
-        expect(checker).toHaveBeenCalledTimes(1);
+      await request(server, '/health/ready');
+      expect(checker).toHaveBeenCalledTimes(1);
 
-        // Advance past 30s TTL
-        fakeNow += 31_000;
+      // Advance past 30s TTL
+      fakeNow += 31_000;
 
-        await request(server, '/health/ready');
-        expect(checker).toHaveBeenCalledTimes(2);
-      } finally {
-        Date.now = realDateNow;
-      }
+      await request(server, '/health/ready');
+      expect(checker).toHaveBeenCalledTimes(2);
+
+      spy.mockRestore();
     });
 
     it('recovers after a cached failure expires', async () => {
@@ -174,24 +170,21 @@ describe('health routes', () => {
       setReadinessChecker(checker);
       setReady(true);
 
-      const realDateNow = Date.now;
-      let fakeNow = realDateNow();
-      Date.now = () => fakeNow;
+      let fakeNow = Date.now();
+      const spy = jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
 
-      try {
-        // First call fails
-        const res1 = await request(server, '/health/ready');
-        expect(res1.status).toBe(503);
+      // First call fails
+      const res1 = await request(server, '/health/ready');
+      expect(res1.status).toBe(503);
 
-        // Fix the backend and advance past TTL
-        shouldFail = false;
-        fakeNow += 31_000;
+      // Fix the backend and advance past TTL
+      shouldFail = false;
+      fakeNow += 31_000;
 
-        const res2 = await request(server, '/health/ready');
-        expect(res2.status).toBe(200);
-      } finally {
-        Date.now = realDateNow;
-      }
+      const res2 = await request(server, '/health/ready');
+      expect(res2.status).toBe(200);
+
+      spy.mockRestore();
     });
   });
 });
