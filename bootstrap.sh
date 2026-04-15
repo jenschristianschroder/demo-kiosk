@@ -482,7 +482,7 @@ ACA_OUTBOUND_IPS="$(az containerapp env show \
 
 # az -o tsv returns the literal string "None" when a property is missing;
 # normalise that (and pure whitespace) to empty so the fallback triggers.
-if [[ -z "${ACA_OUTBOUND_IPS// /}" || "$ACA_OUTBOUND_IPS" == "None" ]]; then
+if [[ "$ACA_OUTBOUND_IPS" =~ ^[[:space:]]*$ || "$ACA_OUTBOUND_IPS" == "None" ]]; then
   ACA_OUTBOUND_IPS=""
 fi
 
@@ -493,7 +493,7 @@ if [[ -z "$ACA_OUTBOUND_IPS" ]]; then
     --query 'properties.staticIp' \
     -o tsv 2>/dev/null || true)"
 
-  if [[ -z "${ACA_OUTBOUND_IPS// /}" || "$ACA_OUTBOUND_IPS" == "None" ]]; then
+  if [[ "$ACA_OUTBOUND_IPS" =~ ^[[:space:]]*$ || "$ACA_OUTBOUND_IPS" == "None" ]]; then
     ACA_OUTBOUND_IPS=""
   fi
 fi
