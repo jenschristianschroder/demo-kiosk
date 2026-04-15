@@ -443,8 +443,11 @@ fi
 ###############################################################################
 # Step 10.1b — Add ACA outbound IPs to demo storage account firewall
 #
-#   The demo storage account uses --default-action Deny (no public network
-#   access). ACA containers accessing blob storage via the data-plane SDK
+#   This step assumes the demo storage account is configured with
+#   --default-action Deny (restricted public network access). If that
+#   configuration is not already in place, adding ACA outbound IPs here
+#   will not by itself enforce a deny-by-default storage firewall.
+#   ACA containers accessing blob storage via the data-plane SDK
 #   (BlobServiceClient + DefaultAzureCredential) are NOT covered by the
 #   --bypass AzureServices flag — that bypass only applies to specific
 #   trusted Azure services (e.g. Backup), not general compute like ACA.
@@ -477,28 +480,55 @@ ACA_OUTBOUND_IPS="$(az containerapp env show \
   --query 'properties.outboundIpAddresses[]' \
   -o tsv 2>/dev/null || true)"
 
+# az -o tsv returns the literal string "None" when a property is missing;
+# normalise that (and pure whitespace) to empty so the fallback triggers.
+if [[ -z "${ACA_OUTBOUND_IPS// /}" || "$ACA_OUTBOUND_IPS" == "None" ]]; then
+  ACA_OUTBOUND_IPS=""
+fi
+
 if [[ -z "$ACA_OUTBOUND_IPS" ]]; then
   ACA_OUTBOUND_IPS="$(az containerapp env show \
     --name "$ACA_ENV" \
     --resource-group "$RESOURCE_GROUP" \
     --query 'properties.staticIp' \
     -o tsv 2>/dev/null || true)"
+
+  if [[ -z "${ACA_OUTBOUND_IPS// /}" || "$ACA_OUTBOUND_IPS" == "None" ]]; then
+    ACA_OUTBOUND_IPS=""
+  fi
 fi
 
 [[ -n "$ACA_OUTBOUND_IPS" ]] || fail "Could not determine ACA environment outbound IPs for '$ACA_ENV'. Verify the environment exists and is provisioned."
 
+network_rule_add_failures=0
+network_rule_add_successes=0
+network_rule_add_existing=0
+
 for ip in $ACA_OUTBOUND_IPS; do
   [[ -n "$ip" ]] || continue
   info "  Allowing IP $ip on '$DEMO_STORAGE_ACCOUNT'…"
-  if ! rule_err="$(az storage account network-rule add \
+  if rule_err="$(az storage account network-rule add \
     --account-name "$DEMO_STORAGE_ACCOUNT" \
     --resource-group "$RESOURCE_GROUP" \
     --ip-address "$ip" \
     --output none 2>&1)"; then
-    warn "  Failed to add IP rule for $ip: $rule_err (may already exist)"
+    network_rule_add_successes=$((network_rule_add_successes + 1))
+  else
+    if [[ "$rule_err" == *"already exists"* || "$rule_err" == *"is already present"* ]]; then
+      network_rule_add_existing=$((network_rule_add_existing + 1))
+      warn "  IP rule for $ip already exists on '$DEMO_STORAGE_ACCOUNT'."
+    else
+      network_rule_add_failures=$((network_rule_add_failures + 1))
+      warn "  Failed to add IP rule for $ip: $rule_err"
+    fi
   fi
 done
-ok "ACA outbound IPs added to '$DEMO_STORAGE_ACCOUNT' firewall."
+
+if (( network_rule_add_failures > 0 )); then
+  fail "Failed to add $network_rule_add_failures ACA outbound IP firewall rule(s) to '$DEMO_STORAGE_ACCOUNT'. Resolve the errors above before enabling the blob backend."
+fi
+
+ok "ACA outbound IPs added to '$DEMO_STORAGE_ACCOUNT' firewall. Added: $network_rule_add_successes, already present: $network_rule_add_existing."
 
 ###############################################################################
 # Step 10.2 — Enable blob backend on ca-registry-api
