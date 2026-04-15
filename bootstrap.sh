@@ -246,10 +246,6 @@ else
   ok "Subnet '$SUBNET_PE' created."
 fi
 
-SUBNET_PE_ID="$(az network vnet subnet show \
-  --vnet-name "$VNET_NAME" --name "$SUBNET_PE" \
-  --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
-
 ###############################################################################
 # Step 5.2 — Private DNS Zone for blob storage
 #   All private endpoints for blob storage share a single DNS zone.
