@@ -29,6 +29,29 @@ prompt_with_default() {
   printf -v "$var_name" '%s' "${input:-$default}"
 }
 
+# ensure_blob_container <storage_resource_id> <container_name>
+# Creates a blob container via the ARM management plane if it does not already exist.
+# Uses az rest to bypass data-plane firewall restrictions and shared-key-disabled accounts.
+ensure_blob_container() {
+  local storage_resource_id="$1" container_name="$2"
+  local container_url="${storage_resource_id}/blobServices/default/containers/${container_name}?api-version=2023-05-01"
+  local check_output create_output
+  info "Ensuring blob container '$container_name' exists…"
+  if check_output="$(az rest --method GET --url "$container_url" --output none 2>&1)"; then
+    ok "Blob container '$container_name' already exists."
+  elif printf '%s' "$check_output" | grep -Eq 'ContainerNotFound|ResourceNotFound|404'; then
+    if create_output="$(az rest --method PUT --url "$container_url" --body '{}' --output none 2>&1)"; then
+      ok "Blob container '$container_name' created."
+    elif printf '%s' "$create_output" | grep -Eq 'ContainerAlreadyExists|409'; then
+      ok "Blob container '$container_name' already exists."
+    else
+      fail "Failed to create blob container '$container_name': $create_output"
+    fi
+  else
+    fail "Failed to check blob container '$container_name': $check_output"
+  fi
+}
+
 ###############################################################################
 # Banner
 ###############################################################################
@@ -101,14 +124,21 @@ unset _sa_base _sa_hash
 
 TOKEN_CONTAINER="easyauthtokens"
 
+# Storage account for the demo registry. Can be overridden via DEMO_STORAGE_ACCOUNT env var.
+# Defaults to the well-known existing account 'hubdemokioskst'.
+DEMO_STORAGE_ACCOUNT="${DEMO_STORAGE_ACCOUNT:-hubdemokioskst}"
+DEMO_REGISTRY_CONTAINER="demo-registry"
+
 info "Derived resource names:"
-info "  Resource group:  $RESOURCE_GROUP"
-info "  ACR:             $ACR_NAME"
-info "  ACA Environment: $ACA_ENV"
-info "  Log Analytics:   $LOG_WORKSPACE"
-info "  Storage Account: $STORAGE_ACCOUNT"
-info "  Token Container: $TOKEN_CONTAINER"
-info "  Container Apps:  $CA_API, $CA_LAUNCHER, $CA_ADMIN"
+info "  Resource group:        $RESOURCE_GROUP"
+info "  ACR:                   $ACR_NAME"
+info "  ACA Environment:       $ACA_ENV"
+info "  Log Analytics:         $LOG_WORKSPACE"
+info "  Storage Account:       $STORAGE_ACCOUNT"
+info "  Token Container:       $TOKEN_CONTAINER"
+info "  Demo Storage Account:  $DEMO_STORAGE_ACCOUNT"
+info "  Demo Registry Container: $DEMO_REGISTRY_CONTAINER"
+info "  Container Apps:        $CA_API, $CA_LAUNCHER, $CA_ADMIN"
 
 ###############################################################################
 # Step 4 — Resource Group
@@ -203,34 +233,33 @@ fi
 STORAGE_RESOURCE_ID="$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
 
 # Create blob container via ARM management plane (bypasses data plane firewall + key restrictions)
-info "Ensuring blob container '$TOKEN_CONTAINER' exists…"
-TOKEN_CONTAINER_URL="${STORAGE_RESOURCE_ID}/blobServices/default/containers/${TOKEN_CONTAINER}?api-version=2023-05-01"
-
-container_check_output=""
-if container_check_output="$(az rest --method GET \
-  --url "$TOKEN_CONTAINER_URL" \
-  --output none 2>&1)"; then
-  ok "Blob container '$TOKEN_CONTAINER' already exists."
-elif printf '%s' "$container_check_output" | grep -Eq 'ContainerNotFound|ResourceNotFound|404'; then
-  container_create_output=""
-  if container_create_output="$(az rest --method PUT \
-    --url "$TOKEN_CONTAINER_URL" \
-    --body '{}' \
-    --output none 2>&1)"; then
-    ok "Blob container '$TOKEN_CONTAINER' created."
-  elif printf '%s' "$container_create_output" | grep -Eq 'ContainerAlreadyExists|409'; then
-    ok "Blob container '$TOKEN_CONTAINER' already exists."
-  else
-    fail "Failed to create blob container '$TOKEN_CONTAINER': $container_create_output"
-  fi
-else
-  fail "Failed to check blob container '$TOKEN_CONTAINER': $container_check_output"
-fi
+ensure_blob_container "$STORAGE_RESOURCE_ID" "$TOKEN_CONTAINER"
 
 TOKEN_BLOB_URI="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${TOKEN_CONTAINER}"
 
 ###############################################################################
-# Step 6.5 — User-assigned managed identity for ACR image pull
+# Step 6.2 — Demo-registry blob container in DEMO_STORAGE_ACCOUNT
+###############################################################################
+info "Ensuring demo storage account '$DEMO_STORAGE_ACCOUNT' exists…"
+demo_storage_check_output=""
+DEMO_STORAGE_RESOURCE_ID=""
+if demo_storage_check_output="$(az storage account show \
+  --name "$DEMO_STORAGE_ACCOUNT" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query id -o tsv 2>&1)"; then
+  DEMO_STORAGE_RESOURCE_ID="$demo_storage_check_output"
+  ok "Demo storage account '$DEMO_STORAGE_ACCOUNT' found."
+elif printf '%s' "$demo_storage_check_output" | grep -Eqi 'could not be found|was not found|ResourceNotFound|NotFound'; then
+  fail "Demo storage account '$DEMO_STORAGE_ACCOUNT' not found in resource group '$RESOURCE_GROUP'. Ensure it exists or set DEMO_STORAGE_ACCOUNT to an existing account name in that group."
+else
+  fail "Failed to check demo storage account '$DEMO_STORAGE_ACCOUNT': $demo_storage_check_output"
+fi
+
+# Create blob container via ARM management plane (bypasses data plane firewall + key restrictions)
+ensure_blob_container "$DEMO_STORAGE_RESOURCE_ID" "$DEMO_REGISTRY_CONTAINER"
+
+###############################################################################
+# Step 6.3 — User-assigned managed identity for ACR image pull
 ###############################################################################
 IDENTITY_NAME="${RESOURCE_PREFIX}-acr-pull"
 info "Ensuring managed identity '$IDENTITY_NAME' exists…"
