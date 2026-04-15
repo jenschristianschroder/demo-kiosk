@@ -4,21 +4,39 @@ A touch-first demo kiosk launcher designed for a large portrait touchscreen, dep
 
 ## Architecture
 
-The system consists of three containerized services deployed to the same Azure Container Apps Environment:
+The system consists of three containerized services deployed to a VNet-integrated Azure Container Apps Environment. Storage accounts are secured by Azure Network Security Perimeter (NSP) and accessed via private endpoints.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Azure Container Apps Environment                          │
-│                                                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │   Launcher   │  │  Registry    │  │    Admin     │    │
-│  │  (React SPA) │──│    API       │──│  (React SPA) │    │
-│  │  nginx :80   │  │  Express     │  │  nginx :80   │    │
-│  │              │  │  :3001       │  │              │    │
-│  └──────────────┘  └──────────────┘  └──────────────┘    │
-│       public            internal          protected       │
-│                                          (Entra ID)       │
-└────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  VNet (10.0.0.0/16)                                                │
+│                                                                    │
+│  ┌─ snet-aca (10.0.0.0/23) ────────────────────────────────────┐  │
+│  │  Azure Container Apps Environment                            │  │
+│  │                                                              │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │  │
+│  │  │   Launcher   │  │  Registry    │  │    Admin     │      │  │
+│  │  │  (React SPA) │──│    API       │──│  (React SPA) │      │  │
+│  │  │  nginx :80   │  │  Express     │  │  nginx :80   │      │  │
+│  │  │              │  │  :3001       │  │              │      │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘      │  │
+│  │       public            internal          protected         │  │
+│  │                                          (Entra ID)         │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                    │                               │
+│  ┌─ snet-storage-pe (10.0.2.0/24) ┼────────────────────────────┐  │
+│  │  Private Endpoints              │                            │  │
+│  │  ┌─────────────┐  ┌────────────┴┐                           │  │
+│  │  │ PE: demo    │  │ PE: token   │                           │  │
+│  │  │ storage blob│  │ storage blob│                           │  │
+│  │  └──────┬──────┘  └──────┬──────┘                           │  │
+│  └─────────┼────────────────┼──────────────────────────────────┘  │
+└────────────┼────────────────┼─────────────────────────────────────┘
+             │                │
+    ┌────────┴──────────────────────┐  ┌───┴────────────────────────────┐
+    │ Demo Registry                 │  │ Easy Auth Token Store          │
+    │ Storage Account               │  │ Storage Account                │
+    │ (SecuredByPerimeter (NSP))    │  │ (SecuredByPerimeter (NSP))     │
+    └───────────────────────────────┘  └────────────────────────────────┘
 ```
 
 | Service | Path | Description |
@@ -31,7 +49,7 @@ The system consists of three containerized services deployed to the same Azure C
 
 - **All demo data comes from the registry API** — no hardcoded URLs in the UI
 - **Stateless frontend** — state is held client-side or in the registry
-- **In-memory store** with a `DemoStore` interface designed for future swap to Azure Cosmos DB
+- **Blob-backed store** with a `DemoStore` interface (in-memory fallback for local dev)
 - **Seed data included** — 5 demos, one per capability tag (Speech, Vision, Language, Decision, Agentic)
 
 ## Features
@@ -164,58 +182,44 @@ docker build -t demo-kiosk/admin ./apps/admin
 | `VITE_API_BASE` | launcher, admin | (empty) | API base URL (empty = same origin) |
 | `VITE_IDLE_TIMEOUT` | launcher | `60` | Idle timeout in seconds |
 
-## ACA Deployment Guidance
+## ACA Deployment
 
-1. **Create Azure Container Registry (ACR)**
-   ```bash
-   az acr create -n <registry> -g <rg> --sku Basic
-   ```
+The `bootstrap.sh` script provisions all Azure infrastructure and deploys the services. It is idempotent and safe to re-run.
 
-2. **Build and push images**
-   ```bash
-   az acr build -r <registry> -t registry-api:latest ./services/registry-api
-   az acr build -r <registry> -t launcher:latest ./apps/launcher
-   az acr build -r <registry> -t admin:latest ./apps/admin
-   ```
+```bash
+# Set required inputs (or the script will prompt interactively)
+export AZURE_SUBSCRIPTION_ID="<your-subscription-id>"
+export AZURE_LOCATION="northeurope"
+export RESOURCE_PREFIX="hub-demo-kiosk"
 
-3. **Create Container Apps Environment**
-   ```bash
-   az containerapp env create -n <env> -g <rg> --location <region>
-   ```
+./bootstrap.sh
+```
 
-4. **Deploy services**
-   ```bash
-   # Registry API (internal ingress)
-   az containerapp create -n registry-api -g <rg> \
-     --environment <env> \
-     --image <registry>.azurecr.io/registry-api:latest \
-     --target-port 3001 \
-     --ingress internal \
-     --min-replicas 1 \
-     --env-vars PORT=3001
+### What bootstrap.sh provisions
 
-   # Launcher (external ingress, public)
-   az containerapp create -n launcher -g <rg> \
-     --environment <env> \
-     --image <registry>.azurecr.io/launcher:latest \
-     --target-port 80 \
-     --ingress external \
-     --min-replicas 0
+| Resource | Purpose |
+|----------|---------|
+| VNet + subnets | Network isolation for ACA and private endpoints |
+| Private DNS Zone | Resolves `*.blob.core.windows.net` to private endpoint IPs |
+| Azure Container Registry | Hosts container images |
+| Storage Accounts (×2) | Demo registry blobs + Easy Auth token store |
+| Private Endpoints | Blob access over the Azure backbone (no public internet) |
+| Network Security Perimeter | Perimeter-secured storage (`publicNetworkAccess: SecuredByPerimeter`) |
+| ACA Environment (VNet-integrated) | Hosts all three container apps |
+| Container Apps (×3) | Launcher, Registry API, Admin |
+| Entra ID App Registration | Easy Auth for Admin UI |
 
-   # Admin (external ingress, protected with Easy Auth)
-   az containerapp create -n admin -g <rg> \
-     --environment <env> \
-     --image <registry>.azurecr.io/admin:latest \
-     --target-port 80 \
-     --ingress external \
-     --min-replicas 0
-   ```
+### Post-deployment
 
-5. **Enable authentication on Admin**
-   Configure ACA built-in authentication (Easy Auth) with Entra ID for the admin container app.
+After the first run, the NSP starts in **Learning** mode. Once validated, switch to **Enforced**:
 
-6. **Configure health probes**
-   Set startup, liveness, and readiness probes pointing to the `/health/*` endpoints on the registry API.
+```bash
+az network perimeter profile update \
+  --perimeter-name nsp-<prefix> \
+  --resource-group rg-<prefix> \
+  --name profile-default \
+  --access-mode Enforced
+```
 
 ## License
 
