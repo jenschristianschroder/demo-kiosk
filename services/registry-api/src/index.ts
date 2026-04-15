@@ -51,11 +51,13 @@ const STARTUP_MAX_DELAY_MS = 30_000;
 
 async function startup(): Promise<void> {
   if (store instanceof BlobStore) {
+    let pingSucceeded = false;
     let delay = STARTUP_INITIAL_DELAY_MS;
     for (let attempt = 1; attempt <= STARTUP_MAX_RETRIES; attempt++) {
       try {
         await store.ping();
         console.log(`Blob store connectivity check passed (attempt ${attempt}).`);
+        pingSucceeded = true;
         break;
       } catch (err) {
         console.warn(
@@ -73,8 +75,12 @@ async function startup(): Promise<void> {
       }
     }
 
-    // Seed default data if the blob container is empty (first-run detection)
-    await store.initialize();
+    // Seed default data if the blob container is empty (first-run detection).
+    // Only attempt initialization after a successful ping — if connectivity
+    // never succeeded, initialize() would fail and crash the process.
+    if (pingSucceeded) {
+      await store.initialize();
+    }
   }
   setReady(true);
 }
