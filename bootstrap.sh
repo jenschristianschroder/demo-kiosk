@@ -488,14 +488,15 @@ fi
 [[ -n "$ACA_OUTBOUND_IPS" ]] || fail "Could not determine ACA environment outbound IPs for '$ACA_ENV'. Verify the environment exists and is provisioned."
 
 for ip in $ACA_OUTBOUND_IPS; do
-  # Skip empty/whitespace-only tokens
-  [[ -n "${ip// /}" ]] || continue
+  [[ -n "$ip" ]] || continue
   info "  Allowing IP $ip on '$DEMO_STORAGE_ACCOUNT'…"
-  az storage account network-rule add \
+  if ! rule_err="$(az storage account network-rule add \
     --account-name "$DEMO_STORAGE_ACCOUNT" \
     --resource-group "$RESOURCE_GROUP" \
     --ip-address "$ip" \
-    --output none 2>/dev/null || true
+    --output none 2>&1)"; then
+    warn "  Failed to add IP rule for $ip: $rule_err (may already exist)"
+  fi
 done
 ok "ACA outbound IPs added to '$DEMO_STORAGE_ACCOUNT' firewall."
 
