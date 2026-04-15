@@ -57,6 +57,7 @@ jobs:
             liveness-path: /health/live
             readiness-path: /health/ready
             cors-origin: "*"
+            store-backend: blob
           - app: launcher
             ca-name: ca-launcher
             target-port: 80
@@ -96,6 +97,14 @@ jobs:
               echo "      env:"
               echo "      - name: CORS_ORIGIN"
               echo "        value: \"${{ matrix['cors-origin'] }}\""
+              if [ -n "${{ matrix['store-backend'] }}" ]; then
+                echo "      - name: STORE_BACKEND"
+                echo "        value: ${{ matrix['store-backend'] }}"
+                echo "      - name: AZURE_STORAGE_ACCOUNT_NAME"
+                echo "        value: ${{ vars.DEMO_STORAGE_ACCOUNT }}"
+                echo "      - name: AZURE_STORAGE_CONTAINER_NAME"
+                echo "        value: ${{ vars.DEMO_REGISTRY_CONTAINER }}"
+              fi
             fi
             echo "      probes:"
             echo "      - type: startup"

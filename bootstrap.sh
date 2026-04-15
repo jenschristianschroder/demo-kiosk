@@ -407,6 +407,56 @@ API_INTERNAL_URL="http://${API_FQDN}"
 info "Registry API internal URL: $API_INTERNAL_URL"
 
 ###############################################################################
+# Step 10.1 — System-assigned MI for ca-registry-api (blob access)
+###############################################################################
+info "Ensuring system-assigned managed identity on '$CA_API'…"
+az containerapp identity assign \
+  --name "$CA_API" \
+  --resource-group "$RESOURCE_GROUP" \
+  --system-assigned \
+  --output none
+API_MI_PRINCIPAL_ID="$(az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --query 'identity.principalId' -o tsv)"
+[[ -n "$API_MI_PRINCIPAL_ID" ]] || fail "Failed to resolve system-assigned managed identity principalId for '$CA_API'."
+ok "System-assigned MI enabled (principalId: ${API_MI_PRINCIPAL_ID:0:8}…)."
+
+info "Assigning Storage Blob Data Contributor to $CA_API MI on '$DEMO_STORAGE_ACCOUNT'…"
+EXISTING_API_ROLE_COUNT="$(az role assignment list \
+  --assignee-object-id "$API_MI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$DEMO_STORAGE_RESOURCE_ID" \
+  --query 'length(@)' \
+  -o tsv)"
+
+if [[ "$EXISTING_API_ROLE_COUNT" -gt 0 ]]; then
+  info "Storage Blob Data Contributor already assigned to $CA_API MI."
+else
+  az role assignment create \
+    --assignee-object-id "$API_MI_PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" \
+    --scope "$DEMO_STORAGE_RESOURCE_ID" \
+    --output none
+  ok "Storage Blob Data Contributor assigned to $CA_API MI."
+fi
+
+###############################################################################
+# Step 10.2 — Enable blob backend on ca-registry-api
+#   Set STORE_BACKEND *after* MI + RBAC are in place so the new revision starts
+#   with working credentials and does not crashloop.
+###############################################################################
+info "Switching $CA_API to blob store backend…"
+az containerapp update \
+  --name "$CA_API" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars \
+    STORE_BACKEND=blob \
+    "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
+    "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
+  --output none
+ok "$CA_API blob backend env vars applied."
+
+###############################################################################
 # Step 11 — Deploy launcher (external ingress)
 ###############################################################################
 info "Deploying container app '$CA_LAUNCHER'…"
