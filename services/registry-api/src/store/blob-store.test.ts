@@ -1,6 +1,6 @@
 import { Readable } from 'stream';
 import { RestError } from '@azure/storage-blob';
-import { BlobStore } from './blob-store';
+import { BlobStore, ConcurrencyError } from './blob-store';
 import { Demo, KioskSettings } from '../models';
 
 // ── Mock @azure/identity ──────────────────────────────────────────────────────
@@ -338,6 +338,59 @@ describe('BlobStore', () => {
 
       const [, , uploadOptions] = mockUpload.mock.calls[0];
       expect(uploadOptions.conditions).toEqual({ ifNoneMatch: '*' });
+    });
+  });
+
+  // ── error handling ───────────────────────────────────────────────────────────
+
+  describe('error handling', () => {
+    it('throws ConcurrencyError on 412 Precondition Failed during write', async () => {
+      mockDownload.mockResolvedValue(
+        makeDownloadResponse(JSON.stringify([DEMO_1]), '"etag-stale"'),
+      );
+      mockUpload.mockRejectedValue(new RestError('ETag mismatch', { statusCode: 412 }));
+
+      const store = makeStore();
+      await expect(store.createDemo(DEMO_2)).rejects.toThrow(ConcurrencyError);
+    });
+
+    it('throws ConcurrencyError on 409 Conflict during write', async () => {
+      mockDownload.mockResolvedValue(
+        makeDownloadResponse(JSON.stringify([DEMO_1]), '"etag-stale"'),
+      );
+      mockUpload.mockRejectedValue(new RestError('Conflict', { statusCode: 409 }));
+
+      const store = makeStore();
+      await expect(store.createDemo(DEMO_2)).rejects.toThrow(ConcurrencyError);
+    });
+
+    it('re-throws non-concurrency errors from write', async () => {
+      mockDownload.mockResolvedValue(
+        makeDownloadResponse(JSON.stringify([DEMO_1]), '"etag-1"'),
+      );
+      mockUpload.mockRejectedValue(new RestError('Service unavailable', { statusCode: 503 }));
+
+      const store = makeStore();
+      await expect(store.createDemo(DEMO_2)).rejects.toThrow(RestError);
+      await expect(store.createDemo(DEMO_2)).rejects.not.toThrow(ConcurrencyError);
+    });
+
+    it('surfaces ContainerNotFound (404) as an error instead of treating it as empty state', async () => {
+      mockDownload.mockRejectedValue(
+        new RestError('Container not found', { statusCode: 404, code: 'ContainerNotFound' }),
+      );
+
+      const store = makeStore();
+      await expect(store.getAllDemos()).rejects.toThrow(RestError);
+    });
+
+    it('throws a clear error when download response has no readable stream', async () => {
+      mockDownload.mockResolvedValue({ etag: '"etag-1"', readableStreamBody: null });
+
+      const store = makeStore();
+      await expect(store.getAllDemos()).rejects.toThrow(
+        "Blob download returned no readable stream for 'demos.json'",
+      );
     });
   });
 });

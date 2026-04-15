@@ -1,4 +1,4 @@
-import { BlobServiceClient, BlockBlobClient, RestError } from '@azure/storage-blob';
+import { BlobServiceClient, BlockBlobClient, ContainerClient, RestError } from '@azure/storage-blob';
 import { DefaultAzureCredential } from '@azure/identity';
 import { Demo, KioskSettings } from '../models';
 import { DemoStore } from './interface';
@@ -17,11 +17,18 @@ interface BlobReadResult<T> {
 }
 
 function isBlobNotFound(err: unknown): boolean {
-  return err instanceof RestError && (err.statusCode === 404 || err.code === 'BlobNotFound');
+  return err instanceof RestError && err.code === 'BlobNotFound';
+}
+
+export class ConcurrencyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConcurrencyError';
+  }
 }
 
 export class BlobStore implements DemoStore {
-  private containerClient;
+  private readonly containerClient: ContainerClient;
 
   constructor(accountName?: string, containerName?: string) {
     const account = accountName ?? process.env['AZURE_STORAGE_ACCOUNT_NAME'];
@@ -42,8 +49,10 @@ export class BlobStore implements DemoStore {
     try {
       const response = await blobClient.download();
       const etag = response.etag;
+      const body = response.readableStreamBody;
+      if (!body) throw new Error(`Blob download returned no readable stream for '${blobName}'`);
       const chunks: Buffer[] = [];
-      for await (const chunk of response.readableStreamBody!) {
+      for await (const chunk of body) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
       const text = Buffer.concat(chunks).toString('utf-8');
@@ -61,10 +70,22 @@ export class BlobStore implements DemoStore {
 
     const conditions = etag ? { ifMatch: etag } : { ifNoneMatch: '*' };
 
-    await blockBlobClient.upload(buffer, buffer.length, {
-      blobHTTPHeaders: { blobContentType: 'application/json' },
-      conditions,
-    });
+    try {
+      await blockBlobClient.upload(buffer, buffer.length, {
+        blobHTTPHeaders: { blobContentType: 'application/json' },
+        conditions,
+      });
+    } catch (err) {
+      if (
+        err instanceof RestError &&
+        (err.statusCode === 412 || err.statusCode === 409)
+      ) {
+        throw new ConcurrencyError(
+          `Concurrent modification detected for blob '${blobName}'. Please retry.`,
+        );
+      }
+      throw err;
+    }
   }
 
   private async readDemosBlob(): Promise<BlobReadResult<Demo[]>> {
