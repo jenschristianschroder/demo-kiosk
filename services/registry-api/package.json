@@ -8,13 +8,15 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint .",
-    "test": "echo \"Tests passed\" && exit 0"
+    "test": "jest"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/storage-blob": "^12.31.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
@@ -24,11 +26,14 @@
     "@eslint/js": "^9.39.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/jest": "^29.5.14",
     "@types/node": "^25.6.0",
     "@types/uuid": "^10.0.0",
     "eslint": "^9.39.4",
     "globals": "^17.5.0",
+    "jest": "^29.7.0",
     "nodemon": "^3.1.14",
+    "ts-jest": "^29.4.9",
     "ts-node": "^10.9.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.1"
