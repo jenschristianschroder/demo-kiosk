@@ -72,6 +72,9 @@ async function startup(): Promise<void> {
         delay = Math.min(delay * 2, STARTUP_MAX_DELAY_MS);
       }
     }
+
+    // Seed default data if the blob container is empty (first-run detection)
+    await store.initialize();
   }
   setReady(true);
 }

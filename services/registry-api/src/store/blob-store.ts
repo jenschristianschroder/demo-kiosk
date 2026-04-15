@@ -2,14 +2,10 @@ import { BlobServiceClient, BlockBlobClient, ContainerClient, RestError } from '
 import { DefaultAzureCredential } from '@azure/identity';
 import { Demo, KioskSettings } from '../models';
 import { DemoStore } from './interface';
+import { SEED_DEMOS, DEFAULT_SETTINGS } from './seed-data';
 
 const DEMOS_BLOB = 'demos.json';
 const SETTINGS_BLOB = 'settings.json';
-
-const DEFAULT_SETTINGS: KioskSettings = {
-  idleTimeoutSeconds: 60,
-  featuredDemoIds: [],
-};
 
 interface BlobReadResult<T> {
   data: T;
@@ -102,6 +98,45 @@ export class BlobStore implements DemoStore {
 
   async ping(): Promise<void> {
     await this.containerClient.getProperties();
+  }
+
+  // ── First-run seed ──────────────────────────────────────────────────────────
+
+  async initialize(): Promise<void> {
+    // Seed demos.json if it does not exist
+    const demosResult = await this.readBlob<Demo[]>(DEMOS_BLOB);
+    if (demosResult === null) {
+      try {
+        await this.writeBlob(DEMOS_BLOB, SEED_DEMOS);
+        console.log(`Seeded ${SEED_DEMOS.length} default demos to blob storage`);
+      } catch (err) {
+        if (err instanceof ConcurrencyError) {
+          // Another replica already created the blob — safe to ignore
+          console.log('Demos blob was created by another replica; skipping seed');
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      console.log(`Loaded ${demosResult.data.length} demos from blob storage`);
+    }
+
+    // Seed settings.json if it does not exist
+    const settingsResult = await this.readBlob<KioskSettings>(SETTINGS_BLOB);
+    if (settingsResult === null) {
+      try {
+        await this.writeBlob(SETTINGS_BLOB, DEFAULT_SETTINGS);
+        console.log('Seeded default settings to blob storage');
+      } catch (err) {
+        if (err instanceof ConcurrencyError) {
+          console.log('Settings blob was created by another replica; skipping seed');
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      console.log('Loaded settings from blob storage');
+    }
   }
 
   // ── DemoStore implementation ─────────────────────────────────────────────────
