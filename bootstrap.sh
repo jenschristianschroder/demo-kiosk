@@ -372,9 +372,6 @@ if az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --ou
       PORT=3001 \
       CORS_ORIGIN='*' \
       NODE_ENV=production \
-      STORE_BACKEND=blob \
-      "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
-      "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
     --output none
   az containerapp ingress update \
     --name "$CA_API" \
@@ -400,9 +397,6 @@ else
       PORT=3001 \
       CORS_ORIGIN='*' \
       NODE_ENV=production \
-      STORE_BACKEND=blob \
-      "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
-      "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
     --output none
   ok "$CA_API created."
 fi
@@ -445,6 +439,22 @@ else
     --output none
   ok "Storage Blob Data Contributor assigned to $CA_API MI."
 fi
+
+###############################################################################
+# Step 10.2 — Enable blob backend on ca-registry-api
+#   Set STORE_BACKEND *after* MI + RBAC are in place so the new revision starts
+#   with working credentials and does not crashloop.
+###############################################################################
+info "Switching $CA_API to blob store backend…"
+az containerapp update \
+  --name "$CA_API" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars \
+    STORE_BACKEND=blob \
+    "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
+    "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
+  --output none
+ok "$CA_API blob backend env vars applied."
 
 ###############################################################################
 # Step 11 — Deploy launcher (external ingress)

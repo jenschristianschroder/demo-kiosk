@@ -58,8 +58,6 @@ jobs:
             readiness-path: /health/ready
             cors-origin: "*"
             store-backend: blob
-            storage-account-name: hubdemokioskst
-            storage-container-name: demo-registry
           - app: launcher
             ca-name: ca-launcher
             target-port: 80
@@ -103,9 +101,9 @@ jobs:
                 echo "      - name: STORE_BACKEND"
                 echo "        value: ${{ matrix['store-backend'] }}"
                 echo "      - name: AZURE_STORAGE_ACCOUNT_NAME"
-                echo "        value: ${{ matrix['storage-account-name'] }}"
+                echo "        value: ${{ vars.DEMO_STORAGE_ACCOUNT }}"
                 echo "      - name: AZURE_STORAGE_CONTAINER_NAME"
-                echo "        value: ${{ matrix['storage-container-name'] }}"
+                echo "        value: ${{ vars.DEMO_REGISTRY_CONTAINER }}"
               fi
             fi
             echo "      probes:"
