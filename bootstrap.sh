@@ -441,9 +441,71 @@ else
 fi
 
 ###############################################################################
+# Step 10.1b — Add ACA outbound IPs to demo storage account firewall
+#
+#   The demo storage account uses --default-action Deny (no public network
+#   access). ACA containers accessing blob storage via the data-plane SDK
+#   (BlobServiceClient + DefaultAzureCredential) are NOT covered by the
+#   --bypass AzureServices flag — that bypass only applies to specific
+#   trusted Azure services (e.g. Backup), not general compute like ACA.
+#
+#   Option A (implemented here): retrieve the ACA environment's static
+#   outbound IP addresses and add them to the storage account's IP-based
+#   firewall rules.  This is the simplest approach.
+#
+#   Tradeoffs / alternatives:
+#     • Option A (this) — simplest; outbound IPs may change if the ACA
+#       environment is recreated, requiring a re-run of bootstrap.
+#     • Option B (private endpoint) — most secure, no public IP exposure,
+#       resilient to environment recreation; requires VNet-integrated ACA
+#       environment and more infrastructure to manage.
+#     • Option C (service endpoint) — simpler than B, still VNet-bound;
+#       also requires VNet-integrated ACA environment.
+#
+#   Idempotent: az storage account network-rule add is a no-op if the IP
+#   rule already exists.
+###############################################################################
+info "Adding ACA environment outbound IPs to '$DEMO_STORAGE_ACCOUNT' firewall…"
+
+# Retrieve outbound IPs from the ACA environment.  The property name varies
+# by environment type: workload-profile environments expose
+# outboundIpAddresses (array), while consumption-only environments may only
+# expose staticIp (single string).  Try the array first, then fall back.
+ACA_OUTBOUND_IPS="$(az containerapp env show \
+  --name "$ACA_ENV" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query 'properties.outboundIpAddresses[]' \
+  -o tsv 2>/dev/null || true)"
+
+if [[ -z "$ACA_OUTBOUND_IPS" ]]; then
+  ACA_OUTBOUND_IPS="$(az containerapp env show \
+    --name "$ACA_ENV" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query 'properties.staticIp' \
+    -o tsv 2>/dev/null || true)"
+fi
+
+[[ -n "$ACA_OUTBOUND_IPS" ]] || fail "Could not determine ACA environment outbound IPs for '$ACA_ENV'. Verify the environment exists and is provisioned."
+
+for ip in $ACA_OUTBOUND_IPS; do
+  # Skip empty/whitespace-only tokens
+  [[ -n "${ip// /}" ]] || continue
+  info "  Allowing IP $ip on '$DEMO_STORAGE_ACCOUNT'…"
+  az storage account network-rule add \
+    --account-name "$DEMO_STORAGE_ACCOUNT" \
+    --resource-group "$RESOURCE_GROUP" \
+    --ip-address "$ip" \
+    --output none 2>/dev/null || true
+done
+ok "ACA outbound IPs added to '$DEMO_STORAGE_ACCOUNT' firewall."
+
+###############################################################################
 # Step 10.2 — Enable blob backend on ca-registry-api
-#   Set STORE_BACKEND *after* MI + RBAC are in place so the new revision starts
-#   with working credentials and does not crashloop.
+#   Set STORE_BACKEND *after* MI + RBAC + network access are in place so the
+#   new revision starts with working credentials and network connectivity,
+#   and does not crashloop.  The readiness probe (/health/ready) will not
+#   return 200 until BlobStore.ping() succeeds, confirming blob storage is
+#   reachable.
 ###############################################################################
 info "Switching $CA_API to blob store backend…"
 az containerapp update \
@@ -772,6 +834,16 @@ if command -v curl >/dev/null 2>&1; then
     ok "Launcher / → $HTTP_CODE"
   else
     warn "Launcher / → $HTTP_CODE"
+    SMOKE_OK=false
+  fi
+
+  # Registry API reachability via launcher proxy — confirms blob storage
+  # network access is working (readiness probe gates on BlobStore.ping()).
+  HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${LAUNCHER_URL}/api/demos" 2>/dev/null || echo '000')"
+  if [[ "$HTTP_CODE" =~ ^2 ]]; then
+    ok "Registry API /api/demos (via launcher) → $HTTP_CODE (blob storage reachable)"
+  else
+    warn "Registry API /api/demos (via launcher) → $HTTP_CODE (registry-api may still be starting or blob storage unreachable)"
     SMOKE_OK=false
   fi
 
