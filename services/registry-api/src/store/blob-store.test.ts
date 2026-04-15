@@ -13,6 +13,7 @@ jest.mock('@azure/identity', () => ({
 /* eslint-disable no-var */
 var mockUpload: jest.Mock;
 var mockDownload: jest.Mock;
+var mockGetProperties: jest.Mock;
 /* eslint-enable no-var */
 
 jest.mock('@azure/storage-blob', () => {
@@ -37,6 +38,7 @@ jest.mock('@azure/storage-blob', () => {
   const mockGetContainerClient = jest.fn().mockReturnValue({
     getBlobClient: mockGetBlobClient,
     getBlockBlobClient: mockGetBlockBlobClient,
+    getProperties: (...args: unknown[]) => mockGetProperties(...args),
   });
 
   return {
@@ -100,6 +102,7 @@ describe('BlobStore', () => {
   beforeEach(() => {
     mockUpload = jest.fn().mockResolvedValue({});
     mockDownload = jest.fn();
+    mockGetProperties = jest.fn().mockResolvedValue({});
   });
 
   // ── Constructor ─────────────────────────────────────────────────────────────
@@ -338,6 +341,22 @@ describe('BlobStore', () => {
 
       const [, , uploadOptions] = mockUpload.mock.calls[0];
       expect(uploadOptions.conditions).toEqual({ ifNoneMatch: '*' });
+    });
+  });
+
+  // ── ping ─────────────────────────────────────────────────────────────────────
+
+  describe('ping', () => {
+    it('resolves when the container is reachable', async () => {
+      mockGetProperties.mockResolvedValue({});
+      const store = makeStore();
+      await expect(store.ping()).resolves.toBeUndefined();
+    });
+
+    it('rejects when the container is not reachable', async () => {
+      mockGetProperties.mockRejectedValue(new RestError('Unauthorized', { statusCode: 403 }));
+      const store = makeStore();
+      await expect(store.ping()).rejects.toThrow(RestError);
     });
   });
 

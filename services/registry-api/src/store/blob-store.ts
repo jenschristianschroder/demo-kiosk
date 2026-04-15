@@ -98,6 +98,12 @@ export class BlobStore implements DemoStore {
     return result ?? { data: { ...DEFAULT_SETTINGS }, etag: undefined };
   }
 
+  // ── Startup check ────────────────────────────────────────────────────────────
+
+  async ping(): Promise<void> {
+    await this.containerClient.getProperties();
+  }
+
   // ── DemoStore implementation ─────────────────────────────────────────────────
 
   async getAllDemos(): Promise<Demo[]> {

@@ -4,11 +4,10 @@ import helmet from 'helmet';
 import healthRouter, { setReady } from './routes/health';
 import { createDemoRouter } from './routes/demos';
 import { createSettingsRouter } from './routes/settings';
-import { InMemoryStore, BlobStore } from './store';
+import { BlobStore, selectStore } from './store';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
-const STORE_BACKEND = process.env.STORE_BACKEND || 'memory';
 
 const app = express();
 
@@ -17,37 +16,20 @@ app.use(helmet());
 app.use(cors({ origin: CORS_ORIGIN.split(',').map((o) => o.trim()) }));
 app.use(express.json());
 
-// Store
-const VALID_STORE_BACKENDS = ['memory', 'blob'] as const;
-type StoreBackend = (typeof VALID_STORE_BACKENDS)[number];
-
-if (!VALID_STORE_BACKENDS.includes(STORE_BACKEND as StoreBackend)) {
-  console.error(
-    `Invalid STORE_BACKEND value '${STORE_BACKEND}'. Valid options are: ${VALID_STORE_BACKENDS.join(', ')}`,
-  );
+// Store — select backend from STORE_BACKEND env var (default: memory)
+let store: ReturnType<typeof selectStore>;
+try {
+  store = selectStore(process.env.STORE_BACKEND);
+} catch (err) {
+  console.error((err as Error).message);
   process.exit(1);
 }
 
-let store: InMemoryStore | BlobStore;
-if (STORE_BACKEND === 'blob') {
-  const accountName = process.env.AZURE_STORAGE_ACCOUNT_NAME;
-  const containerName = process.env.AZURE_STORAGE_CONTAINER_NAME;
-  if (!accountName) {
-    console.error(
-      'AZURE_STORAGE_ACCOUNT_NAME is required when STORE_BACKEND=blob. Set the environment variable or change STORE_BACKEND to memory.',
-    );
-    process.exit(1);
-  }
-  if (!containerName) {
-    console.error(
-      'AZURE_STORAGE_CONTAINER_NAME is required when STORE_BACKEND=blob. Set the environment variable or change STORE_BACKEND to memory.',
-    );
-    process.exit(1);
-  }
-  store = new BlobStore(accountName, containerName);
-  console.log(`Store backend: blob (account: ${accountName}, container: ${containerName})`);
+if (store instanceof BlobStore) {
+  console.log(
+    `Store backend: blob (account: ${process.env.AZURE_STORAGE_ACCOUNT_NAME}, container: ${process.env.AZURE_STORAGE_CONTAINER_NAME})`,
+  );
 } else {
-  store = new InMemoryStore();
   console.log('Store backend: memory');
 }
 
@@ -56,10 +38,27 @@ app.use('/health', healthRouter);
 app.use('/api/demos', createDemoRouter(store));
 app.use('/api/settings', createSettingsRouter(store));
 
-// Start
-app.listen(PORT, () => {
+// Startup: verify blob connectivity before marking the service ready
+async function startup(): Promise<void> {
+  if (store instanceof BlobStore) {
+    try {
+      await store.ping();
+    } catch (err) {
+      console.error(
+        'Blob store connectivity check failed. Ensure the container exists and the service has the required access.',
+        (err as Error).message,
+      );
+      process.exit(1);
+    }
+  }
   setReady(true);
+}
+
+// Start — server begins listening immediately so liveness/startup probes succeed;
+// readiness is deferred until the blob connectivity check passes.
+app.listen(PORT, () => {
   console.log(`Registry API listening on port ${PORT}`);
+  void startup();
 });
 
 export default app;
