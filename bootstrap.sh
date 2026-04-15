@@ -235,15 +235,22 @@ SUBNET_ACA_ID="$(az network vnet subnet show \
 
 info "Ensuring subnet '$SUBNET_PE' exists…"
 if az network vnet subnet show --vnet-name "$VNET_NAME" --name "$SUBNET_PE" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-  ok "Subnet '$SUBNET_PE' already exists."
+  az network vnet subnet update \
+    --vnet-name "$VNET_NAME" \
+    --name "$SUBNET_PE" \
+    --resource-group "$RESOURCE_GROUP" \
+    --disable-private-endpoint-network-policies true \
+    --output none
+  ok "Subnet '$SUBNET_PE' already exists; private endpoint network policies disabled."
 else
   az network vnet subnet create \
     --vnet-name "$VNET_NAME" \
     --name "$SUBNET_PE" \
     --resource-group "$RESOURCE_GROUP" \
     --address-prefix "$SUBNET_PE_PREFIX" \
+    --disable-private-endpoint-network-policies true \
     --output none
-  ok "Subnet '$SUBNET_PE' created."
+  ok "Subnet '$SUBNET_PE' created with private endpoint network policies disabled."
 fi
 
 ###############################################################################
@@ -301,13 +308,16 @@ ACR_RESOURCE_ID="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GR
 info "Ensuring Storage Account '$STORAGE_ACCOUNT' exists…"
 if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
   ok "Storage Account '$STORAGE_ACCOUNT' already exists; enforcing security settings…"
+  # Keep --default-action Deny here; SecuredByPerimeter is applied after NSP
+  # association in Step 6.5.  Setting it prematurely would fail if the NSP
+  # association does not yet exist.
   az storage account update \
     --name "$STORAGE_ACCOUNT" \
     --resource-group "$RESOURCE_GROUP" \
     --allow-blob-public-access false \
     --allow-shared-key-access false \
     --min-tls-version TLS1_2 \
-    --public-network-access SecuredByPerimeter \
+    --default-action Deny \
     --output none
   ok "Storage Account security settings enforced."
 else

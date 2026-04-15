@@ -32,11 +32,11 @@ The system consists of three containerized services deployed to a VNet-integrate
 │  └─────────┼────────────────┼──────────────────────────────────┘  │
 └────────────┼────────────────┼─────────────────────────────────────┘
              │                │
-    ┌────────┴────────┐  ┌───┴──────────────────┐
-    │ Demo Registry   │  │ Easy Auth Token Store │
-    │ Storage Account │  │ Storage Account       │
-    │ (SecuredByNSP)  │  │ (SecuredByNSP)        │
-    └─────────────────┘  └───────────────────────┘
+    ┌────────┴──────────────────────┐  ┌───┴────────────────────────────┐
+    │ Demo Registry                 │  │ Easy Auth Token Store          │
+    │ Storage Account               │  │ Storage Account                │
+    │ (SecuredByPerimeter (NSP))    │  │ (SecuredByPerimeter (NSP))     │
+    └───────────────────────────────┘  └────────────────────────────────┘
 ```
 
 | Service | Path | Description |
