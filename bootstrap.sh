@@ -372,6 +372,9 @@ if az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --ou
       PORT=3001 \
       CORS_ORIGIN='*' \
       NODE_ENV=production \
+      STORE_BACKEND=blob \
+      "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
+      "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
     --output none
   az containerapp ingress update \
     --name "$CA_API" \
@@ -397,6 +400,9 @@ else
       PORT=3001 \
       CORS_ORIGIN='*' \
       NODE_ENV=production \
+      STORE_BACKEND=blob \
+      "AZURE_STORAGE_ACCOUNT_NAME=${DEMO_STORAGE_ACCOUNT}" \
+      "AZURE_STORAGE_CONTAINER_NAME=${DEMO_REGISTRY_CONTAINER}" \
     --output none
   ok "$CA_API created."
 fi
@@ -405,6 +411,40 @@ fi
 API_FQDN="$(az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --query 'properties.configuration.ingress.fqdn' -o tsv)"
 API_INTERNAL_URL="http://${API_FQDN}"
 info "Registry API internal URL: $API_INTERNAL_URL"
+
+###############################################################################
+# Step 10.1 — System-assigned MI for ca-registry-api (blob access)
+###############################################################################
+info "Ensuring system-assigned managed identity on '$CA_API'…"
+az containerapp identity assign \
+  --name "$CA_API" \
+  --resource-group "$RESOURCE_GROUP" \
+  --system-assigned \
+  --output none
+API_MI_PRINCIPAL_ID="$(az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --query 'identity.principalId' -o tsv)"
+[[ -n "$API_MI_PRINCIPAL_ID" ]] || fail "Failed to resolve system-assigned managed identity principalId for '$CA_API'."
+ok "System-assigned MI enabled (principalId: ${API_MI_PRINCIPAL_ID:0:8}…)."
+
+info "Assigning Storage Blob Data Contributor to $CA_API MI on '$DEMO_STORAGE_ACCOUNT'…"
+EXISTING_API_ROLE_COUNT="$(az role assignment list \
+  --assignee-object-id "$API_MI_PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$DEMO_STORAGE_RESOURCE_ID" \
+  --query 'length(@)' \
+  -o tsv)"
+
+if [[ "$EXISTING_API_ROLE_COUNT" -gt 0 ]]; then
+  info "Storage Blob Data Contributor already assigned to $CA_API MI."
+else
+  az role assignment create \
+    --assignee-object-id "$API_MI_PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" \
+    --scope "$DEMO_STORAGE_RESOURCE_ID" \
+    --output none
+  ok "Storage Blob Data Contributor assigned to $CA_API MI."
+fi
 
 ###############################################################################
 # Step 11 — Deploy launcher (external ingress)
