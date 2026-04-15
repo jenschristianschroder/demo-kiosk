@@ -24,14 +24,19 @@ function request(
       reject(new Error('Server not listening'));
       return;
     }
-    http.get(`http://127.0.0.1:${addr.port}${path}`, (res) => {
+    const req = http.get(`http://127.0.0.1:${addr.port}${path}`, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
-        resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+        try {
+          resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+        } catch (error) {
+          reject(error);
+        }
       });
       res.on('error', reject);
     });
+    req.on('error', reject);
   });
 }
 
