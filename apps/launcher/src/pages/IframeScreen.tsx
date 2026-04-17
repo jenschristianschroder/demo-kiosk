@@ -66,7 +66,7 @@ const IframeScreen: React.FC = () => {
                their own cookies/storage. Keep default capabilities narrow and
                only expand them explicitly if a specific demo requires it. */
             sandbox="allow-scripts allow-same-origin"
-            allow="fullscreen"
+            allow="fullscreen; microphone"
             referrerPolicy="no-referrer"
           />
         )}
