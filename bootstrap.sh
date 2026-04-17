@@ -129,15 +129,13 @@ TOKEN_CONTAINER="easyauthtokens"
 DEMO_STORAGE_ACCOUNT="${DEMO_STORAGE_ACCOUNT:-hubdemokioskst}"
 DEMO_REGISTRY_CONTAINER="demo-registry"
 
-# Networking — VNet, subnets, private endpoints, NSP
+# Networking — VNet, subnets, private endpoints
 VNET_NAME="vnet-${RESOURCE_PREFIX}"
 SUBNET_ACA="snet-aca"
 SUBNET_PE="snet-storage-pe"
 VNET_ADDRESS_SPACE="10.0.0.0/16"
 SUBNET_ACA_PREFIX="10.0.0.0/23"       # /23 minimum required by ACA
 SUBNET_PE_PREFIX="10.0.2.0/24"
-NSP_NAME="nsp-${RESOURCE_PREFIX}"
-NSP_PROFILE="profile-default"
 PE_DEMO_STORAGE="pe-${DEMO_STORAGE_ACCOUNT}-blob"
 PE_TOKEN_STORAGE="pe-${STORAGE_ACCOUNT}-blob"
 PRIVATE_DNS_ZONE="privatelink.blob.core.windows.net"
@@ -155,7 +153,6 @@ info "  Container Apps:        $CA_API, $CA_LAUNCHER, $CA_ADMIN"
 info "  VNet:                  $VNET_NAME ($VNET_ADDRESS_SPACE)"
 info "  ACA Subnet:            $SUBNET_ACA ($SUBNET_ACA_PREFIX)"
 info "  PE Subnet:             $SUBNET_PE ($SUBNET_PE_PREFIX)"
-info "  NSP:                   $NSP_NAME"
 
 ###############################################################################
 # Step 4 — Resource Group
@@ -198,9 +195,9 @@ ok "Log Analytics workspace ready (ID: ${LOG_WORKSPACE_ID:0:8}…)."
 
 ###############################################################################
 # Step 5.1 — Virtual Network and Subnets
-#   VNet integration is required for ACA to reach storage accounts that have
-#   public network access disabled (SecuredByPerimeter).  ACA containers route
-#   outbound traffic through the VNet and reach storage via private endpoints.
+#   VNet integration is required for ACA to reach storage accounts via
+#   private endpoints when public network access is denied.  ACA containers
+#   route outbound traffic through the VNet.
 ###############################################################################
 info "Ensuring VNet '$VNET_NAME' exists…"
 if az network vnet show --name "$VNET_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
@@ -308,9 +305,6 @@ ACR_RESOURCE_ID="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GR
 info "Ensuring Storage Account '$STORAGE_ACCOUNT' exists…"
 if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
   ok "Storage Account '$STORAGE_ACCOUNT' already exists; enforcing security settings…"
-  # Keep --default-action Deny here; SecuredByPerimeter is applied after NSP
-  # association in Step 6.5.  Setting it prematurely would fail if the NSP
-  # association does not yet exist.
   az storage account update \
     --name "$STORAGE_ACCOUNT" \
     --resource-group "$RESOURCE_GROUP" \
@@ -318,10 +312,10 @@ if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE
     --allow-shared-key-access false \
     --min-tls-version TLS1_2 \
     --default-action Deny \
+    --bypass None \
     --output none
   ok "Storage Account security settings enforced."
 else
-  # Create with Deny first; SecuredByPerimeter requires NSP association which comes later.
   az storage account create \
     --name "$STORAGE_ACCOUNT" \
     --resource-group "$RESOURCE_GROUP" \
@@ -331,7 +325,7 @@ else
     --allow-blob-public-access false \
     --allow-shared-key-access false \
     --default-action Deny \
-    --bypass AzureServices \
+    --bypass None \
     --min-tls-version TLS1_2 \
     --output none
   ok "Storage Account '$STORAGE_ACCOUNT' created."
@@ -425,8 +419,18 @@ ensure_private_endpoint() {
 
   local dns_group_name="${pe_name}-dns"
   info "Ensuring DNS zone group '$dns_group_name'…"
-  if az network private-endpoint dns-zone-group show --endpoint-name "$pe_name" --name "$dns_group_name" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-    ok "DNS zone group '$dns_group_name' already exists."
+  if az network private-endpoint dns-zone-group show \
+    --endpoint-name "$pe_name" \
+    --name "$dns_group_name" \
+    --resource-group "$RESOURCE_GROUP" \
+    --output none 2>/dev/null; then
+    az network private-endpoint dns-zone-group update \
+      --endpoint-name "$pe_name" \
+      --name "$dns_group_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --private-dns-zone "$PRIVATE_DNS_ZONE" \
+      --zone-name blob \
+      --output none
   else
     az network private-endpoint dns-zone-group create \
       --endpoint-name "$pe_name" \
@@ -435,115 +439,26 @@ ensure_private_endpoint() {
       --private-dns-zone "$PRIVATE_DNS_ZONE" \
       --zone-name blob \
       --output none
-    ok "DNS zone group '$dns_group_name' created."
   fi
+  ok "DNS zone group '$dns_group_name' ready."
 }
 
 ensure_private_endpoint "$PE_TOKEN_STORAGE" "$STORAGE_ACCOUNT" "$STORAGE_RESOURCE_ID"
 ensure_private_endpoint "$PE_DEMO_STORAGE" "$DEMO_STORAGE_ACCOUNT" "$DEMO_STORAGE_RESOURCE_ID"
 
 ###############################################################################
-# Step 6.5 — Network Security Perimeter
-#   Creates an NSP with a default profile and associates both storage accounts.
-#   The profile starts in Learning mode for safe rollout; switch to Enforced
-#   after validating traffic flows:
-#     az network perimeter profile update --perimeter-name "$NSP_NAME" \
-#       --resource-group "$RESOURCE_GROUP" --name "$NSP_PROFILE" \
-#       --access-mode Enforced
-#
-#   NSP delegates network access control away from per-resource IP/VNet rules.
-#   Resources in the same perimeter trust each other; inbound access rules
-#   control external access.  The storage accounts' publicNetworkAccess is
-#   set to SecuredByPerimeter on re-runs (Step 6.1 update path).
+# Step 6.5 — Lock down demo storage account firewall
+#   Now that private endpoints + DNS are in place, restrict the demo storage
+#   account to deny public traffic.  ACA containers reach it via PE.
 ###############################################################################
-info "Ensuring Network Security Perimeter '$NSP_NAME'…"
-if az network perimeter show --name "$NSP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-  ok "NSP '$NSP_NAME' already exists."
-else
-  az network perimeter create \
-    --name "$NSP_NAME" \
-    --resource-group "$RESOURCE_GROUP" \
-    --location "$AZURE_LOCATION" \
-    --output none
-  ok "NSP '$NSP_NAME' created."
-fi
-
-info "Ensuring NSP profile '$NSP_PROFILE'…"
-if az network perimeter profile show --perimeter-name "$NSP_NAME" --name "$NSP_PROFILE" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-  ok "NSP profile '$NSP_PROFILE' already exists."
-else
-  az network perimeter profile create \
-    --perimeter-name "$NSP_NAME" \
-    --name "$NSP_PROFILE" \
-    --resource-group "$RESOURCE_GROUP" \
-    --output none
-  ok "NSP profile '$NSP_PROFILE' created."
-fi
-
-# Add an inbound access rule allowing the ACA subnet.
-info "Ensuring NSP inbound access rule for ACA subnet…"
-NSP_RULE_ACA="allow-aca-subnet"
-if az network perimeter profile access-rule show \
-  --perimeter-name "$NSP_NAME" --profile-name "$NSP_PROFILE" \
-  --name "$NSP_RULE_ACA" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-  ok "NSP access rule '$NSP_RULE_ACA' already exists."
-else
-  az network perimeter profile access-rule create \
-    --perimeter-name "$NSP_NAME" \
-    --profile-name "$NSP_PROFILE" \
-    --name "$NSP_RULE_ACA" \
-    --resource-group "$RESOURCE_GROUP" \
-    --address-prefixes "$SUBNET_ACA_PREFIX" \
-    --direction Inbound \
-    --output none
-  ok "NSP access rule '$NSP_RULE_ACA' created."
-fi
-
-# Associate storage accounts with the NSP.
-# Uses az rest because az network perimeter association create requires
-# --private-link-resource and --profile parameters on the REST body.
-ensure_nsp_association() {
-  local assoc_name="$1" resource_id="$2"
-  local nsp_id
-  nsp_id="$(az network perimeter show --name "$NSP_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
-  local assoc_url="${nsp_id}/resourceAssociations/${assoc_name}?api-version=2023-08-01-preview"
-  local profile_id="${nsp_id}/profiles/${NSP_PROFILE}"
-
-  info "Ensuring NSP association '$assoc_name'…"
-  if az rest --method GET --url "$assoc_url" --output none 2>/dev/null; then
-    ok "NSP association '$assoc_name' already exists."
-  else
-    az rest --method PUT --url "$assoc_url" \
-      --body "{
-        \"properties\": {
-          \"privateLinkResource\": {\"id\": \"${resource_id}\"},
-          \"profile\": {\"id\": \"${profile_id}\"},
-          \"accessMode\": \"Learning\"
-        }
-      }" --output none
-    ok "NSP association '$assoc_name' created (Learning mode)."
-  fi
-}
-
-ensure_nsp_association "assoc-token-storage" "$STORAGE_RESOURCE_ID"
-ensure_nsp_association "assoc-demo-storage" "$DEMO_STORAGE_RESOURCE_ID"
-
-# Now that NSP associations are in place, switch storage to SecuredByPerimeter.
-info "Switching '$STORAGE_ACCOUNT' to SecuredByPerimeter…"
-az storage account update \
-  --name "$STORAGE_ACCOUNT" \
-  --resource-group "$RESOURCE_GROUP" \
-  --public-network-access SecuredByPerimeter \
-  --output none
-ok "'$STORAGE_ACCOUNT' public network access set to SecuredByPerimeter."
-
-info "Switching '$DEMO_STORAGE_ACCOUNT' to SecuredByPerimeter…"
+info "Enforcing firewall on demo storage account '$DEMO_STORAGE_ACCOUNT'…"
 az storage account update \
   --name "$DEMO_STORAGE_ACCOUNT" \
   --resource-group "$RESOURCE_GROUP" \
-  --public-network-access SecuredByPerimeter \
+  --default-action Deny \
+  --bypass AzureServices \
   --output none
-ok "'$DEMO_STORAGE_ACCOUNT' public network access set to SecuredByPerimeter."
+ok "Demo storage account '$DEMO_STORAGE_ACCOUNT' firewall enforced (default-action Deny)."
 
 ###############################################################################
 # Step 7 — ACA Environment (VNet-integrated)
@@ -553,7 +468,15 @@ ok "'$DEMO_STORAGE_ACCOUNT' public network access set to SecuredByPerimeter."
 ###############################################################################
 info "Creating Container Apps environment '$ACA_ENV'…"
 if az containerapp env show --name "$ACA_ENV" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-  ok "ACA environment '$ACA_ENV' already exists."
+  # Verify the existing environment has VNet integration.  VNet cannot be
+  # added after creation — the environment must be deleted and recreated.
+  EXISTING_SUBNET="$(az containerapp env show \
+    --name "$ACA_ENV" --resource-group "$RESOURCE_GROUP" \
+    --query 'properties.vnetConfiguration.infrastructureSubnetId' -o tsv 2>/dev/null || echo '')"
+  if [[ -z "$EXISTING_SUBNET" || "$EXISTING_SUBNET" == "None" ]]; then
+    fail "ACA environment '$ACA_ENV' exists but is NOT VNet-integrated. VNet integration cannot be added to an existing environment. Delete the environment and its container apps first, then re-run:\n  az containerapp env delete --name '$ACA_ENV' --resource-group '$RESOURCE_GROUP' --yes"
+  fi
+  ok "ACA environment '$ACA_ENV' already exists (VNet-integrated)."
 else
   az containerapp env create \
     --name "$ACA_ENV" \
@@ -638,6 +561,7 @@ if az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --ou
     --resource-group "$RESOURCE_GROUP" \
     --type internal \
     --target-port 3001 \
+    --allow-insecure \
     --output none
   ok "$CA_API updated."
 else
@@ -651,6 +575,7 @@ else
     --user-assigned "$IDENTITY_RESOURCE_ID" \
     --target-port 3001 \
     --ingress internal \
+    --allow-insecure \
     --min-replicas 1 \
     --max-replicas 1 \
     --env-vars \
@@ -682,7 +607,6 @@ ok "System-assigned MI enabled (principalId: ${API_MI_PRINCIPAL_ID:0:8}…)."
 info "Assigning Storage Blob Data Contributor to $CA_API MI on '$DEMO_STORAGE_ACCOUNT'…"
 EXISTING_API_ROLE_COUNT="$(az role assignment list \
   --assignee-object-id "$API_MI_PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
   --scope "$DEMO_STORAGE_RESOURCE_ID" \
   --query 'length(@)' \
@@ -704,7 +628,7 @@ fi
 # Step 10.2 — Enable blob backend on ca-registry-api
 #   Set STORE_BACKEND *after* MI + RBAC are in place so the new revision
 #   starts with working credentials.  Network access is handled by the
-#   VNet-integrated environment + private endpoints + NSP (Steps 5.1–6.5).
+#   VNet-integrated environment + private endpoints (Steps 5.1–6.4).
 #   The readiness probe (/health/ready) will not return 200 until
 #   BlobStore.ping() succeeds, confirming blob storage is reachable.
 ###############################################################################
@@ -841,7 +765,6 @@ ok "System-assigned MI enabled (principalId: ${ADMIN_MI_PRINCIPAL_ID:0:8}…)."
 info "Assigning Storage Blob Data Contributor to ca-admin MI on '$STORAGE_ACCOUNT'…"
 EXISTING_ROLE_ASSIGNMENT_COUNT="$(az role assignment list \
   --assignee-object-id "$ADMIN_MI_PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
   --scope "$STORAGE_RESOURCE_ID" \
   --query 'length(@)' \
@@ -1076,24 +999,17 @@ echo ""
 echo "  Resource Group:    $RESOURCE_GROUP"
 echo "  ACR:               $ACR_NAME ($ACR_LOGIN_SERVER)"
 echo "  ACA Environment:   $ACA_ENV (VNet: $VNET_NAME)"
-echo "  NSP:               $NSP_NAME (Learning mode)"
 echo "  Entra App ID:      $CLIENT_ID"
 echo ""
 echo "  ┌─────────────────────────────────────────────────┐"
-echo "  │  NEXT STEPS                                     │"
+echo "  │  NEXT STEP: Restrict admin access               │"
 echo "  │                                                  │"
-echo "  │  1. Restrict admin access:                       │"
-echo "  │     Azure Portal → Entra ID →                   │"
+echo "  │  1. Go to Azure Portal → Entra ID →             │"
 echo "  │     App registrations → '$ENTRA_APP_NAME'       │"
-echo "  │     → 'Assignment required?' = Yes               │"
-echo "  │     → 'Users and groups' → add allowed users     │"
-echo "  │                                                  │"
-echo "  │  2. Switch NSP to Enforced mode once validated:  │"
-echo "  │     az network perimeter profile update \\        │"
-echo "  │       --perimeter-name $NSP_NAME \\              │"
-echo "  │       --resource-group $RESOURCE_GROUP \\        │"
-echo "  │       --name $NSP_PROFILE \\                     │"
-echo "  │       --access-mode Enforced                     │"
+echo "  │  2. Under 'Properties', set                     │"
+echo "  │     'Assignment required?' to Yes                │"
+echo "  │  3. Under 'Users and groups', add the           │"
+echo "  │     users/groups who should access admin.        │"
 echo "  └─────────────────────────────────────────────────┘"
 echo ""
 
