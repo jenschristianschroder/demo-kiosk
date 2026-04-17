@@ -312,7 +312,7 @@ if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE
     --allow-shared-key-access false \
     --min-tls-version TLS1_2 \
     --default-action Deny \
-    --bypass AzureServices \
+    --bypass None \
     --output none
   ok "Storage Account security settings enforced."
 else
@@ -325,7 +325,7 @@ else
     --allow-blob-public-access false \
     --allow-shared-key-access false \
     --default-action Deny \
-    --bypass AzureServices \
+    --bypass None \
     --min-tls-version TLS1_2 \
     --output none
   ok "Storage Account '$STORAGE_ACCOUNT' created."
@@ -419,16 +419,27 @@ ensure_private_endpoint() {
 
   local dns_group_name="${pe_name}-dns"
   info "Ensuring DNS zone group '$dns_group_name'…"
-  # Always attempt create — the command is idempotent (updates if exists).
-  # Using show+create can miss cases where the PE existed but the DNS group
-  # was never created (e.g., a previous run failed between PE and DNS steps).
-  az network private-endpoint dns-zone-group create \
+  if az network private-endpoint dns-zone-group show \
     --endpoint-name "$pe_name" \
     --name "$dns_group_name" \
     --resource-group "$RESOURCE_GROUP" \
-    --private-dns-zone "$PRIVATE_DNS_ZONE" \
-    --zone-name blob \
-    --output none
+    --output none 2>/dev/null; then
+    az network private-endpoint dns-zone-group update \
+      --endpoint-name "$pe_name" \
+      --name "$dns_group_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --private-dns-zone "$PRIVATE_DNS_ZONE" \
+      --zone-name blob \
+      --output none
+  else
+    az network private-endpoint dns-zone-group create \
+      --endpoint-name "$pe_name" \
+      --name "$dns_group_name" \
+      --resource-group "$RESOURCE_GROUP" \
+      --private-dns-zone "$PRIVATE_DNS_ZONE" \
+      --zone-name blob \
+      --output none
+  fi
   ok "DNS zone group '$dns_group_name' ready."
 }
 
@@ -550,6 +561,7 @@ if az containerapp show --name "$CA_API" --resource-group "$RESOURCE_GROUP" --ou
     --resource-group "$RESOURCE_GROUP" \
     --type internal \
     --target-port 3001 \
+    --allow-insecure \
     --output none
   ok "$CA_API updated."
 else
