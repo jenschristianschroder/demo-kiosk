@@ -63,9 +63,11 @@ const IframeScreen: React.FC = () => {
             src={demo.demoUrl}
             title={title}
             /* allow-same-origin is required so cross-origin demos can access
-               their own cookies/storage. Keep default capabilities narrow and
-               only expand them explicitly if a specific demo requires it. */
-            sandbox="allow-scripts allow-same-origin"
+               their own cookies/storage. allow-popups lets demos open pop-up
+               windows (e.g. OAuth flows, help dialogs). allow-popups-to-
+               escape-sandbox ensures those pop-ups are not themselves
+               sandboxed, which is needed for most auth callback flows. */
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
             allow="fullscreen; microphone"
             referrerPolicy="no-referrer"
           />
