@@ -66,8 +66,9 @@ const IframeScreen: React.FC = () => {
                their own cookies/storage. allow-popups lets demos open pop-up
                windows (e.g. OAuth flows, help dialogs). allow-popups-to-
                escape-sandbox ensures those pop-ups are not themselves
-               sandboxed, which is needed for most auth callback flows. */
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+               sandboxed, which is needed for most auth callback flows.
+               allow-downloads lets demos trigger file downloads. */
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
             allow="fullscreen; microphone"
             referrerPolicy="no-referrer"
           />
