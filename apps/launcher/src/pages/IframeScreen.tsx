@@ -67,8 +67,9 @@ const IframeScreen: React.FC = () => {
                windows (e.g. OAuth flows, help dialogs). allow-popups-to-
                escape-sandbox ensures those pop-ups are not themselves
                sandboxed, which is needed for most auth callback flows.
-               allow-downloads lets demos trigger file downloads. */
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
+               allow-downloads lets demos trigger file downloads.
+               allow-forms is required for file uploads and form submissions. */
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-forms"
             allow="fullscreen; microphone"
             referrerPolicy="no-referrer"
           />
