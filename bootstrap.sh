@@ -106,6 +106,7 @@ CA_LAUNCHER="ca-launcher"
 CA_ADMIN="ca-admin"
 
 ENTRA_APP_NAME="${RESOURCE_PREFIX}-admin-auth"
+ENTRA_LAUNCHER_APP_NAME="${RESOURCE_PREFIX}-launcher-auth"
 
 # Derive a compliant Storage Account name: lowercase alphanumeric, 3–24 chars, globally unique.
 # Strip non-alphanumeric chars, lowercase, then append a 6-char hex hash of the
@@ -424,13 +425,7 @@ ensure_private_endpoint() {
     --name "$dns_group_name" \
     --resource-group "$RESOURCE_GROUP" \
     --output none 2>/dev/null; then
-    az network private-endpoint dns-zone-group update \
-      --endpoint-name "$pe_name" \
-      --name "$dns_group_name" \
-      --resource-group "$RESOURCE_GROUP" \
-      --private-dns-zone "$PRIVATE_DNS_ZONE" \
-      --zone-name blob \
-      --output none
+    ok "DNS zone group '$dns_group_name' already exists."
   else
     az network private-endpoint dns-zone-group create \
       --endpoint-name "$pe_name" \
@@ -697,6 +692,39 @@ LAUNCHER_FQDN="$(az containerapp show --name "$CA_LAUNCHER" --resource-group "$R
 LAUNCHER_URL="https://${LAUNCHER_FQDN}"
 
 ###############################################################################
+# Step 11.1 — System-assigned MI for ca-launcher (token store blob access)
+###############################################################################
+info "Ensuring system-assigned managed identity on '$CA_LAUNCHER'…"
+az containerapp identity assign \
+  --name "$CA_LAUNCHER" \
+  --resource-group "$RESOURCE_GROUP" \
+  --system-assigned \
+  --output none
+LAUNCHER_MI_PRINCIPAL_ID="$(az containerapp show --name "$CA_LAUNCHER" --resource-group "$RESOURCE_GROUP" --query 'identity.principalId' -o tsv)"
+[[ -n "$LAUNCHER_MI_PRINCIPAL_ID" ]] || fail "Failed to resolve system-assigned managed identity principalId for '$CA_LAUNCHER'."
+ok "System-assigned MI enabled on $CA_LAUNCHER (principalId: ${LAUNCHER_MI_PRINCIPAL_ID:0:8}…)."
+
+info "Assigning Storage Blob Data Contributor to ca-launcher MI on '$STORAGE_ACCOUNT'…"
+EXISTING_LAUNCHER_ROLE_COUNT="$(az role assignment list \
+  --assignee-object-id "$LAUNCHER_MI_PRINCIPAL_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "$STORAGE_RESOURCE_ID" \
+  --query 'length(@)' \
+  -o tsv)"
+
+if [[ "$EXISTING_LAUNCHER_ROLE_COUNT" -gt 0 ]]; then
+  info "Storage Blob Data Contributor already assigned to ca-launcher MI."
+else
+  az role assignment create \
+    --assignee-object-id "$LAUNCHER_MI_PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" \
+    --scope "$STORAGE_RESOURCE_ID" \
+    --output none
+  ok "Storage Blob Data Contributor assigned to ca-launcher MI."
+fi
+
+###############################################################################
 # Step 12 — Deploy admin (external ingress)
 ###############################################################################
 info "Deploying container app '$CA_ADMIN'…"
@@ -938,6 +966,160 @@ AUTH_ACTION="$(az containerapp auth show \
 ok "Easy Auth configured on admin."
 
 ###############################################################################
+# Step 14b — Entra ID App Registration for Launcher Easy Auth
+###############################################################################
+info "Configuring Entra ID app registration for launcher auth…"
+LAUNCHER_REDIRECT_URI="${LAUNCHER_URL}/.auth/login/aad/callback"
+
+# Check if launcher app registration already exists
+EXISTING_LAUNCHER_APP_ID="$(az ad app list --display-name "$ENTRA_LAUNCHER_APP_NAME" --query '[0].appId' -o tsv 2>/dev/null || echo '')"
+
+LAUNCHER_SECRET_UNCHANGED=false
+LAUNCHER_SECRET_END_DATE="$(date -u -d "+${SECRET_LIFETIME_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+${SECRET_LIFETIME_DAYS}d '+%Y-%m-%dT%H:%M:%SZ')"
+
+if [[ -n "$EXISTING_LAUNCHER_APP_ID" && "$EXISTING_LAUNCHER_APP_ID" != "None" ]]; then
+  info "Entra ID app '$ENTRA_LAUNCHER_APP_NAME' already exists (appId: $EXISTING_LAUNCHER_APP_ID)."
+  LAUNCHER_CLIENT_ID="$EXISTING_LAUNCHER_APP_ID"
+  # Update redirect URI in case launcher URL changed
+  LAUNCHER_APP_OBJECT_ID="$(az ad app list --display-name "$ENTRA_LAUNCHER_APP_NAME" --query '[0].id' -o tsv)"
+  az ad app update --id "$LAUNCHER_APP_OBJECT_ID" \
+    --web-redirect-uris "$LAUNCHER_REDIRECT_URI" \
+    --output none 2>/dev/null || true
+
+  # Only create/rotate the secret if one doesn't already exist or rotation is explicitly requested.
+  EXISTING_LAUNCHER_SECRET_EXPIRY="$(az ad app credential list \
+    --id "$LAUNCHER_CLIENT_ID" \
+    --query "[?displayName=='bootstrap-secret'].endDateTime | [0]" \
+    -o tsv 2>/dev/null || echo '')"
+
+  if [[ -n "$EXISTING_LAUNCHER_SECRET_EXPIRY" && "$EXISTING_LAUNCHER_SECRET_EXPIRY" != "None" ]]; then
+    if [[ "${ROTATE_SECRET}" == "true" ]]; then
+      info "Rotating launcher client secret (ROTATE_SECRET=true, lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+      LAUNCHER_CLIENT_SECRET="$(az ad app credential reset \
+        --id "$LAUNCHER_CLIENT_ID" \
+        --display-name "bootstrap-secret" \
+        --end-date "$LAUNCHER_SECRET_END_DATE" \
+        --query password -o tsv)"
+    else
+      warn "Launcher client secret 'bootstrap-secret' already exists (expires: $EXISTING_LAUNCHER_SECRET_EXPIRY)."
+      warn "Set ROTATE_SECRET=true to rotate credentials."
+      LAUNCHER_SECRET_UNCHANGED=true
+    fi
+  else
+    info "No existing 'bootstrap-secret' found for launcher. Creating client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+    LAUNCHER_CLIENT_SECRET="$(az ad app credential reset \
+      --id "$LAUNCHER_CLIENT_ID" \
+      --display-name "bootstrap-secret" \
+      --end-date "$LAUNCHER_SECRET_END_DATE" \
+      --query password -o tsv)"
+  fi
+else
+  info "Creating Entra ID app registration '$ENTRA_LAUNCHER_APP_NAME'…"
+  LAUNCHER_CLIENT_ID="$(az ad app create \
+    --display-name "$ENTRA_LAUNCHER_APP_NAME" \
+    --web-redirect-uris "$LAUNCHER_REDIRECT_URI" \
+    --sign-in-audience AzureADMyOrg \
+    --query appId -o tsv)"
+  ok "Entra ID launcher app created (appId: $LAUNCHER_CLIENT_ID)."
+
+  info "Creating launcher client secret (lifetime: ${SECRET_LIFETIME_DAYS} days)…"
+  LAUNCHER_CLIENT_SECRET="$(az ad app credential reset \
+    --id "$LAUNCHER_CLIENT_ID" \
+    --display-name "bootstrap-secret" \
+    --end-date "$LAUNCHER_SECRET_END_DATE" \
+    --query password -o tsv)"
+fi
+
+# Enable ID token issuance (required for Easy Auth server-directed flow)
+info "Ensuring ID token issuance is enabled for launcher app…"
+az ad app update --id "$LAUNCHER_CLIENT_ID" --enable-id-token-issuance true --output none
+ok "ID token issuance enabled for launcher app."
+
+# Ensure a service principal exists (required for sign-in to work)
+info "Ensuring service principal exists for '$ENTRA_LAUNCHER_APP_NAME'…"
+if az ad sp show --id "$LAUNCHER_CLIENT_ID" --output none 2>/dev/null; then
+  info "Service principal already exists for launcher."
+else
+  az ad sp create --id "$LAUNCHER_CLIENT_ID" --output none
+  ok "Service principal created for launcher."
+fi
+
+###############################################################################
+# Step 14c — Enable Easy Auth on launcher container app
+###############################################################################
+info "Configuring Easy Auth (Microsoft provider) on '$CA_LAUNCHER'…"
+
+# Store client secret as ACA secret — only when a fresh secret was created/rotated.
+if [[ "$LAUNCHER_SECRET_UNCHANGED" != "true" ]]; then
+  if ! az containerapp secret set \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --secrets "microsoft-provider-authentication-secret=${LAUNCHER_CLIENT_SECRET}" \
+    --output none; then
+    fail "Failed to set Container App secret on '$CA_LAUNCHER'. Cannot proceed with Easy Auth configuration — aborting bootstrap."
+  fi
+else
+  # Verify the ACA secret exists — it may be missing if the container app was
+  # recreated or the secret was manually deleted since the last run.
+  if ! az containerapp secret show \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --secret-name "microsoft-provider-authentication-secret" \
+    --output none 2>/dev/null; then
+    fail "Container App secret 'microsoft-provider-authentication-secret' does not exist on '$CA_LAUNCHER' but the Entra client secret was not rotated. Re-run with ROTATE_SECRET=true to create a fresh secret."
+  fi
+  info "Launcher client secret unchanged; reusing existing ACA secret."
+fi
+
+# Always (re-)apply the Microsoft auth provider configuration so that the issuer
+# and other settings are correct even on re-runs or after an interrupted previous attempt.
+if ! az containerapp auth microsoft update \
+  --name "$CA_LAUNCHER" \
+  --resource-group "$RESOURCE_GROUP" \
+  --client-id "$LAUNCHER_CLIENT_ID" \
+  --client-secret-name "microsoft-provider-authentication-secret" \
+  --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
+  --yes \
+  --output none 2>/dev/null; then
+  # If provider configuration fails, try enabling auth first and then configure again.
+  az containerapp auth update \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --unauthenticated-client-action RedirectToLoginPage \
+    --enabled true \
+    --output none 2>/dev/null || fail "Failed to enable Easy Auth on '$CA_LAUNCHER'."
+  az containerapp auth microsoft update \
+    --name "$CA_LAUNCHER" \
+    --resource-group "$RESOURCE_GROUP" \
+    --client-id "$LAUNCHER_CLIENT_ID" \
+    --client-secret-name "microsoft-provider-authentication-secret" \
+    --issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0" \
+    --yes \
+    --output none || fail "Failed to configure Microsoft auth provider on '$CA_LAUNCHER'."
+fi
+
+# Always explicitly enable auth and enforce redirect-to-login for unauthenticated requests.
+# Enable token store backed by blob storage (using system-assigned MI for access).
+az containerapp auth update \
+  --name "$CA_LAUNCHER" \
+  --resource-group "$RESOURCE_GROUP" \
+  --unauthenticated-client-action RedirectToLoginPage \
+  --enabled true \
+  --token-store true \
+  --blob-container-uri "$TOKEN_BLOB_URI" \
+  --output none || fail "Failed to configure Easy Auth on '$CA_LAUNCHER'."
+
+# Verify the unauthenticated action is correctly set.
+LAUNCHER_AUTH_ACTION="$(az containerapp auth show \
+  --name "$CA_LAUNCHER" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query 'globalValidation.unauthenticatedClientAction' \
+  -o tsv)" || fail "Failed to query Easy Auth configuration on '$CA_LAUNCHER'."
+[[ "$LAUNCHER_AUTH_ACTION" == "RedirectToLoginPage" ]] || fail "Easy Auth configuration succeeded but verification failed: unauthenticated client action is '${LAUNCHER_AUTH_ACTION}', expected 'RedirectToLoginPage' on '$CA_LAUNCHER'."
+
+ok "Easy Auth configured on launcher."
+
+###############################################################################
 # Step 15 — Smoke test
 ###############################################################################
 info "Running smoke tests…"
@@ -945,29 +1127,12 @@ info "Running smoke tests…"
 SMOKE_OK=true
 
 if command -v curl >/dev/null 2>&1; then
-  HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${LAUNCHER_URL}/health/ready" 2>/dev/null || echo '000')"
-  if [[ "$HTTP_CODE" =~ ^2 ]]; then
-    ok "Launcher /health/ready → $HTTP_CODE"
-  else
-    warn "Launcher /health/ready → $HTTP_CODE (may need a moment to start)"
-    SMOKE_OK=false
-  fi
-
+  # Launcher should redirect (302) to login since auth is now enforced
   HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${LAUNCHER_URL}/" 2>/dev/null || echo '000')"
-  if [[ "$HTTP_CODE" =~ ^2 ]]; then
-    ok "Launcher / → $HTTP_CODE"
+  if [[ "$HTTP_CODE" =~ ^(2|3) ]]; then
+    ok "Launcher / → $HTTP_CODE (auth redirect expected)"
   else
     warn "Launcher / → $HTTP_CODE"
-    SMOKE_OK=false
-  fi
-
-  # Registry API reachability via launcher proxy — confirms blob storage
-  # network access is working (readiness probe gates on BlobStore.ping()).
-  HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${LAUNCHER_URL}/api/demos" 2>/dev/null || echo '000')"
-  if [[ "$HTTP_CODE" =~ ^2 ]]; then
-    ok "Registry API /api/demos (via launcher) → $HTTP_CODE (blob storage reachable)"
-  else
-    warn "Registry API /api/demos (via launcher) → $HTTP_CODE (registry-api may still be starting or blob storage unreachable)"
     SMOKE_OK=false
   fi
 
@@ -992,24 +1157,30 @@ echo "╔═══════════════════════�
 echo "║             Deployment Complete!                     ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  Launcher URL:      $LAUNCHER_URL"
+echo "  Launcher URL:      $LAUNCHER_URL  (Entra ID protected)"
 echo "  Admin URL:         $ADMIN_URL  (Entra ID protected)"
 echo "  Registry API:      $API_INTERNAL_URL  (internal only)"
 echo ""
 echo "  Resource Group:    $RESOURCE_GROUP"
 echo "  ACR:               $ACR_NAME ($ACR_LOGIN_SERVER)"
 echo "  ACA Environment:   $ACA_ENV (VNet: $VNET_NAME)"
-echo "  Entra App ID:      $CLIENT_ID"
+echo "  Entra App (Admin):    $CLIENT_ID"
+echo "  Entra App (Launcher): $LAUNCHER_CLIENT_ID"
 echo ""
 echo "  ┌─────────────────────────────────────────────────┐"
-echo "  │  NEXT STEP: Restrict admin access               │"
+echo "  │  NEXT STEP: Restrict access per app             │"
+echo "  │                                                  │"
+echo "  │  For EACH app (admin + launcher):               │"
 echo "  │                                                  │"
 echo "  │  1. Go to Azure Portal → Entra ID →             │"
-echo "  │     App registrations → '$ENTRA_APP_NAME'       │"
+echo "  │     Enterprise applications → select the app    │"
 echo "  │  2. Under 'Properties', set                     │"
 echo "  │     'Assignment required?' to Yes                │"
 echo "  │  3. Under 'Users and groups', add the           │"
-echo "  │     users/groups who should access admin.        │"
+echo "  │     users/groups who should access that app.     │"
+echo "  │                                                  │"
+echo "  │  Admin app:    $ENTRA_APP_NAME                  │"
+echo "  │  Launcher app: $ENTRA_LAUNCHER_APP_NAME         │"
 echo "  └─────────────────────────────────────────────────┘"
 echo ""
 
